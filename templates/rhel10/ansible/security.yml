@@ -1,0 +1,189 @@
+---
+# =============================================================================
+# JDP Security Configuration
+# =============================================================================
+
+# Current contents:
+#   - SSH Server: Build custom sshd_config from three sections
+#   - PAM: Deploy standard pwquality.conf and pwhistory.conf
+#   - Sudo: Deploy standard /etc/sudoers
+#
+# =============================================================================
+# Builds a clean /etc/ssh/sshd_config from three sections:
+
+# =============================================================================
+
+- name: JDP Security Configuration
+  hosts: all
+  become: yes
+  gather_facts: no
+  tasks:
+
+    # =========================================================================
+    # Step 1: Backup original sshd_config
+    # force: no preserves the true original on subsequent runs
+    # =========================================================================
+    - name: "Backup original sshd_config before modification"
+      ansible.builtin.copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.orig.techspec
+        remote_src: yes
+        force: no
+        owner: root
+        group: root
+        mode: '0600'
+
+    # =========================================================================
+    # Step 2: Extract original settings
+    # =========================================================================
+    - name: "Read original sshd settings (Section 2 directives excluded)"
+      ansible.builtin.shell: |
+        grep -v '^\s*#' /etc/ssh/sshd_config.orig.techspec \
+          | grep -v '^\s*$' \
+          | grep -vEi '^\s*(DenyGroups|Banner|HostbasedAuthentication|IgnoreRhosts|LoginGraceTime|LogLevel|MaxAuthTries|MaxStartups|MaxSessions|PermitEmptyPasswords|PermitRootLogin|PermitUserEnvironment|UsePAM|PasswordAuthentication|PrintMotd)\s'
+      register: original_sshd_settings
+      changed_when: false
+
+    # =========================================================================
+    # Step 3: Build new sshd_config content
+    # =========================================================================
+    - name: "Assemble new sshd_config content"
+      ansible.builtin.set_fact:
+        new_sshd_config: |
+          # =============================================================================
+          # JDP Custom SSH Server Configuration
+          # =============================================================================
+
+          # =============================================================================
+          # SECTION 1: Base OS default settings
+
+          # =============================================================================
+          {{ original_sshd_settings.stdout }}
+
+          # =============================================================================
+          # SECTION 2: CIS required settings
+          # =============================================================================
+          DenyGroups nobody
+          Banner /etc/issue.net
+          HostbasedAuthentication no
+          IgnoreRhosts yes
+          LoginGraceTime 60
+          LogLevel INFO
+          MaxAuthTries 4
+          MaxStartups 10:30:60
+          MaxSessions 10
+          PermitEmptyPasswords no
+          PermitRootLogin prohibit-password   # Deviation required for initial configuration - should be set to "no"
+          PermitUserEnvironment no
+          UsePAM yes
+
+          # =============================================================================
+          # SECTION 3: Additional JDP required settings
+          # =============================================================================
+
+          PasswordAuthentication yes 
+          PrintMotd no
+    # =========================================================================
+    # Step 4: Write new sshd_config
+    # validate: runs 'sshd -t -f <tempfile>' before the file is placed.
+    # The copy task only succeeds (and notifies the handler) if validation passes.
+    # =========================================================================
+    - name: "Write new sshd_config"
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config
+        content: "{{ new_sshd_config }}"
+        owner: root
+        group: root
+        mode: '0600'
+        validate: '/usr/sbin/sshd -t -f %s'
+      register: sshd_config_written
+
+    - name: "Restart sshd after config change"
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+      when: sshd_config_written.changed | default(false)
+
+    # =========================================================================
+    # Deploy standard PAM configuration files
+    # Source: files/ subdirectory (may be moved to S3 in future)
+    # =========================================================================
+    - name: "Deploy standard pwquality.conf"
+      ansible.builtin.copy:
+        src: files/pwquality.conf
+        dest: /etc/security/pwquality.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+
+    - name: "Deploy standard pwhistory.conf"
+      ansible.builtin.copy:
+        src: files/pwhistory.conf
+        dest: /etc/security/pwhistory.conf
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+
+    # ======================================================================
+    # Setup sudo logging
+    # ======================================================================
+    - name: Create sudo log file
+      ansible.builtin.file:
+        path: /var/log/sudo.log
+        state: touch
+        owner: root
+        group: root
+        mode: '0640'
+        modification_time: preserve
+        access_time: preserve
+
+    # ======================================================================
+    # authselect configuration (RHEL 8+)
+    # ======================================================================
+
+    - name: /usr/bin/authselect select sssd --force (RHEL 8+)
+      ansible.builtin.command:
+        cmd: /usr/bin/authselect select sssd --force
+      changed_when: true
+      failed_when: false
+
+    - name: authselect enable-feature with-pwhistory (RHEL 8+)
+      ansible.builtin.command:
+        cmd: authselect enable-feature with-pwhistory
+      changed_when: true
+      failed_when: false
+
+    - name: authselect enable-feature with-faillock (RHEL 8+)
+      ansible.builtin.command:
+        cmd: authselect enable-feature with-faillock
+      changed_when: true
+      failed_when: false
+
+    - name: authselect enable-feature without-nullok (RHEL 8+)
+      ansible.builtin.command:
+        cmd: authselect enable-feature without-nullok
+      changed_when: true
+      failed_when: false
+
+    - name: authselect apply changes (RHEL 8+)
+      ansible.builtin.command:
+        cmd: authselect apply-changes
+      changed_when: true
+      failed_when: false
+    # ======================================================================
+    # Set password aging policies
+    # ======================================================================
+    - name: Configure password aging for regular accounts (84 days)
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^PASS_MAX_DAYS', line: 'PASS_MAX_DAYS   84' }
+        - { regexp: '^PASS_MIN_DAYS', line: 'PASS_MIN_DAYS   1' }
+        - { regexp: '^PASS_MIN_LEN', line: 'PASS_MIN_LEN    8' }    # JDP standard, not techspec compliant
+        - { regexp: '^PASS_WARN_AGE', line: 'PASS_WARN_AGE   14' }
+        - { regexp: '^ENCRYPT_METHOD', line: 'ENCRYPT_METHOD SHA512' }  # Ensure SHA512 is used for password hashing

@@ -1,0 +1,223 @@
+---
+# Ansible playbook for cleaning up RHEL 10 before AMI creation
+# This is adapted from the RHEL 9 template
+
+# PLAY 1 - Cleanup and prepare for AMI creation
+- name: Prepare instance for AMI creation
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    target_platform: "{{ target_platform | default('aws') }}"
+  tasks:
+
+    # ============================================
+    # Stop Services Before Cleanup
+    # ============================================
+    - name: Stop rsyslog service
+      ansible.builtin.service:
+        name: rsyslog
+        state: stopped
+      ignore_errors: true
+
+    - name: Stop auditd service
+      ansible.builtin.command: service auditd stop
+      register: stop_auditd_result
+      ignore_errors: true
+
+    # ============================================
+    # Package Cache Cleanup
+    # ============================================
+    - name: Clean dnf cache
+      ansible.builtin.command: dnf clean all
+
+    # ============================================
+    # Temporary Files Cleanup
+    # ============================================
+    - name: Find files in /tmp
+      ansible.builtin.find:
+        paths:
+          - /tmp
+          - /var/tmp
+        patterns: '*'
+        file_type: any
+      register: tmp_files
+
+    - name: Remove files in /tmp
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ tmp_files.files }}"
+      when: tmp_files.files | length > 0
+      ignore_errors: true
+
+    # ============================================
+    # Machine ID Cleanup (Important for cloning)
+    # ============================================
+    - name: Remove machine-id
+      ansible.builtin.file:
+        path: /etc/machine-id
+        state: absent
+
+    - name: Create empty machine-id
+      ansible.builtin.file:
+        path: /etc/machine-id
+        state: touch
+        mode: '0444'
+
+    - name: Remove dbus machine-id
+      ansible.builtin.file:
+        path: /var/lib/dbus/machine-id
+        state: absent
+      ignore_errors: true
+
+    # ============================================
+    # Cloud-init Cleanup
+    # ============================================
+    - name: Clean cloud-init state
+      ansible.builtin.command: cloud-init clean --logs --seed
+      ignore_errors: true
+
+    - name: Remove cloud-init instance data
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/cloud/instance
+        - /var/lib/cloud/instances
+        - /var/lib/cloud/data
+        - /var/lib/cloud/sem
+      ignore_errors: true
+
+    # ============================================
+    # Log File Cleanup
+    # ============================================
+    - name: Purge logs - force log rotation
+      ansible.builtin.command: /usr/sbin/logrotate /etc/logrotate.conf --force
+      failed_when: false
+
+    - name: Find old log files
+      ansible.builtin.find:
+        paths:
+          - /var/log
+        patterns:
+          - '*.gz'
+          - '*.old'
+          - '*-????????'
+          - '*.1'
+          - '*.2'
+          - '*.3'
+          - '*.4'
+        recurse: yes
+      register: old_logs
+
+    - name: Remove old log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: old_logs.files | length > 0
+
+    - name: Truncate current log files
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: ''
+        force: yes
+      loop:
+        - /var/log/audit/audit.log
+        - /var/log/wtmp
+        - /var/log/lastlog
+        - /var/log/messages
+        - /var/log/secure
+        - /var/log/cron
+        - /var/log/sudo.log
+        - /var/log/dnf*.log
+      ignore_errors: true
+
+    - name: Remove cloud-init logs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/log/cloud-init.log
+        - /var/log/cloud-init-output.log
+      ignore_errors: true
+
+
+    # ============================================
+    # User History Cleanup
+    # ============================================
+    - name: Find user SSH directories
+      ansible.builtin.find:
+        paths:
+          - /root/.ssh
+          - /home/ec2-user/.ssh
+        patterns: 'known_hosts,authorized_keys.bak'
+        file_type: file
+      register: user_ssh_files
+      ignore_errors: true
+
+    - name: Remove user SSH history files (not authorized_keys)
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ user_ssh_files.files }}"
+      when: 
+        - user_ssh_files.files is defined
+        - "'authorized_keys' not in item.path or 'bak' in item.path"
+      ignore_errors: true
+
+    - name: Clear root user command history
+      block:
+        - name: Delete bash_history for root
+          ansible.builtin.file:
+            path: /root/.bash_history
+            state: absent
+        - name: Unset HISTFILE for root
+          ansible.builtin.shell: unset HISTFILE
+          args:
+            executable: /bin/bash
+      ignore_errors: true
+
+    - name: Clear ec2-user command history
+      block:
+        - name: Delete bash_history for ec2-user
+          ansible.builtin.file:
+            path: /home/ec2-user/.bash_history
+            state: absent
+        - name: Unset HISTFILE for ec2-user
+          ansible.builtin.shell: unset HISTFILE
+          args:
+            executable: /bin/bash
+      become_user: ec2-user
+      ignore_errors: true
+
+    # ============================================
+    # Final Cleanup
+    # ============================================
+    - name: Sync filesystems
+      ansible.builtin.command: sync
+
+    - name: Print completion message
+      ansible.builtin.debug:
+        msg: "Cleanup complete. Instance is ready for AMI creation."
+
+    # ============================================
+    # FINAL STEP - Remove SSH keys and authorized_keys
+    # This MUST be the absolute last task - removes host keys AND authorized_keys
+    # Both actions will break SSH connections
+    # ============================================
+    - name: Remove SSH host keys and authorized_keys (final step - no more SSH after this)
+      ansible.builtin.shell: |
+        # Sync to ensure all previous changes are written
+        sync
+        # Remove the authorized_keys that Packer injected
+        rm -f /home/ec2-user/.ssh/authorized_keys
+        rm -f /root/.ssh/authorized_keys
+        # Remove SSH host keys
+        rm -f /etc/ssh/ssh_host_*key*
+        # Final sync
+        sync
+      async: 10
+      poll: 0
+      ignore_errors: true

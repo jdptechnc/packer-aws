@@ -1,0 +1,16 @@
+# Ansible and AWS dependencies for Packer AMI builds
+# Generated from working venv on 2026-04-24
+ansible-core==2.16.17
+boto3==1.42.91
+botocore==1.42.91
+cffi==2.0.0
+cryptography==46.0.5
+Jinja2==3.1.6
+jmespath==1.1.0
+MarkupSafe==3.0.3
+packaging==26.0
+pycparser==3.0
+PyYAML==6.0.3
+resolvelib==1.0.1
+s3transfer==0.16.0
+urllib3==2.6.3

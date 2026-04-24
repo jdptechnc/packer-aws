@@ -1,0 +1,273 @@
+---
+# Ansible playbook for configuring RHEL 10 AWS Golden AMI
+# This is adapted from the RHEL 9 template
+
+# PLAY 1 - Configure base VM options for AWS Golden AMI
+- name: PLAY 1 - Initial setup and facts gathering
+  hosts: all
+  become: no
+  gather_facts: true
+  tasks:
+    - name: Display target platform
+      ansible.builtin.debug:
+        msg: "Building for platform: {{ target_platform | default('aws') }}"
+
+    - name: Display system information
+      ansible.builtin.debug:
+        msg: |
+          Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel: {{ ansible_kernel }}
+          Architecture: {{ ansible_architecture }}
+
+    - name: Set ssh username fact
+      ansible.builtin.set_fact:
+        ssh_username: "{{ ansible_user_id }}"
+
+# PLAY 2 - Package Installation
+- name: PLAY 2 - Package Installation
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+
+    # ============================================
+    # System Updates
+    # ============================================
+    - name: Refresh dnf cache
+      ansible.builtin.dnf:
+        update_cache: yes
+    
+    - name: Update all packages to latest
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      register: update_result
+
+    - name: Display update results
+      ansible.builtin.debug:
+        var: update_result.changed
+
+    # ============================================
+    # Required Packages Installation
+    # ============================================
+    # NOTE: gdisk is not available in RHEL 10 repos; GPT tools are in util-linux
+    - name: Install required packages for AWS
+      ansible.builtin.dnf:
+        name:
+          - cloud-init
+          - cloud-utils-growpart
+          - util-linux
+          - vim
+          - curl
+          - wget
+          - unzip
+          - tar
+          - python3
+          - python3-pip
+          - jq
+          - yum-utils
+          - bash-completion
+          - bind-utils
+          - net-tools
+          - lsof
+          - tcpdump
+          - traceroute
+          - rsync
+          - chrony
+          - audit
+          - audit-libs
+          - policycoreutils
+          - selinux-policy
+          - selinux-policy-targeted
+          - sssd
+        state: present
+
+    # Install/Update AWS CLI v2 to latest version
+    # Using command module with curl due to Python/urllib3 compatibility issues with RHEL 10
+    - name: Download latest AWS CLI v2
+      ansible.builtin.command:
+        cmd: curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+
+    - name: Remove existing AWS CLI installer directory
+      ansible.builtin.file:
+        path: /tmp/aws
+        state: absent
+
+    - name: Unzip AWS CLI v2
+      ansible.builtin.unarchive:
+        src: "/tmp/awscliv2.zip"
+        dest: "/tmp"
+        remote_src: yes
+      no_log: true
+
+    - name: Install/Update AWS CLI v2
+      ansible.builtin.command: /tmp/aws/install --update
+
+    - name: Cleanup AWS CLI installer
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/awscliv2.zip
+        - /tmp/aws
+
+    - name: Verify AWS CLI version
+      ansible.builtin.command: /usr/local/bin/aws --version
+      register: aws_cli_version
+      changed_when: false
+
+    - name: Display AWS CLI version
+      ansible.builtin.debug:
+        msg: "AWS CLI version: {{ aws_cli_version.stdout }}"
+
+    - name: Configure AWS CLI auto-completion for all users
+      ansible.builtin.copy:
+        dest: /etc/profile.d/aws_completer.sh
+        content: |
+          # AWS CLI auto-completion
+          complete -C '/usr/local/bin/aws_completer' aws
+        mode: '0644'
+        owner: root
+        group: root
+
+    # root bashrc does not include /usr/local/bin in PATH by default. Add alias for AWS CLI to ensure it's available in root's shell environment.
+    - name: Add alias for AWS CLI to .bashrc
+      ansible.builtin.lineinfile:
+        path: /root/.bashrc
+        line: "alias aws='/usr/local/bin/aws'"
+        state: present
+        insertbefore: EOF
+
+    # Add more package installation tasks here
+
+# PLAY 3 - Baseline Configuration
+- name: PLAY 3 - Baseline Configuration
+  hosts: all
+  become: true
+  vars_files:
+    - service_accounts_vars.yml
+  tasks:
+
+   # ======================================================================
+    # Create application directory - /apps
+    # ======================================================================
+    - name: Create /apps directory
+      ansible.builtin.file:
+        path: /apps
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'          
+
+    # ============================================
+    # Shell environment
+    # ============================================
+    - name: "Deploy standard /etc/bashrc"
+      ansible.builtin.copy:
+        src: files/bashrc.ext
+        dest: /etc/bashrc
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+
+    - name: "Deploy /etc/profile.d/prompt.sh - set NICKNAME for shell prompt"
+      ansible.builtin.copy:
+        dest: /etc/profile.d/prompt.sh
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          export NICKNAME=$(hostname -s)
+
+    # ======================================================================
+    # Create required groups
+    # ======================================================================
+    - name: Create datasec group
+      ansible.builtin.group:
+        name: datasec
+        gid: 267
+        state: present
+
+    - name: Create itsmdisc group
+      ansible.builtin.group:
+        name: itsmdisc
+        gid: 27277
+        state: present
+
+    - name: Create automata group
+      ansible.builtin.group:
+        name: automata
+        gid: 27068
+        state: present
+
+    # ======================================================================
+    # Create service accounts with specific UIDs/GIDs
+    # ======================================================================
+    - name: Create service accounts
+      ansible.builtin.user:
+        name: "{{ item.username }}"
+        uid: "{{ item.uid }}"
+        group: "{{ item.group }}"
+        groups: "{{ item.groups | default([]) }}"
+        comment: "{{ item.comment }}"
+        home: "/home/{{ item.username }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop: "{{ service_accounts }}"
+      when: item.username != 'root'
+
+    # ======================================================================
+    # Create .ssh directories with proper permissions
+    # ======================================================================
+    - name: Create .ssh directories for service accounts
+      ansible.builtin.file:
+        path: "/home/{{ item.username }}/.ssh"
+        state: directory
+        owner: "{{ item.username }}"
+        group: "{{ item.group }}"
+        mode: '0700'
+      loop: "{{ service_accounts }}"
+      when:
+        - item.username != 'root'
+        - item.ssh_key is defined
+
+    # ======================================================================
+    # Deploy SSH authorized_keys
+    # ======================================================================
+    - name: Deploy SSH public keys for service accounts
+      ansible.posix.authorized_key:
+        user: "{{ item.username }}"
+        key: "{{ item.ssh_key }}"
+        state: present
+        exclusive: false
+      loop: "{{ service_accounts }}"
+      when: item.ssh_key is defined
+
+    - name: Set password expiration for service accounts (infinite)
+      ansible.builtin.command:
+        cmd: "chage -M 99999 -m 1 -W 14 {{ item.username }}"
+      loop: "{{ service_accounts }}"
+      when: item.username != 'root'
+      changed_when: true
+
+    # ======================================================================
+    # Set passwords for accounts that require them
+    # ======================================================================
+    - name: Set passwords for service accounts (precomputed SHA512 hashes)
+      ansible.builtin.user:
+        name: "{{ item.username }}"
+        password: "{{ item.password }}"
+        update_password: always
+      loop: "{{ service_accounts }}"
+      when:
+        - item.password is defined
+        - item.username != 'root'
+      no_log: true
+
+    # Add additional baseline configuration tasks here
+
+    # NOTE: Cloud-init configuration is not needed for Red Hat Marketplace AMIs
+    # The base AMI already includes proper EC2 datasource and ec2-user configuration
