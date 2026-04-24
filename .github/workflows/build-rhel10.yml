@@ -1,0 +1,212 @@
+# .github/workflows/build-rhel10.yml
+# Manual-trigger workflow for building RHEL 10 Golden AMI with Packer
+#
+# Usage: Actions tab → "Build RHEL 10 AMI" → Run workflow
+# Required inputs: AWS credentials (access key, secret key, session token)
+
+name: Build RHEL 10 AMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_access_key_id:
+        description: 'AWS Access Key ID'
+        required: true
+        type: string
+      aws_secret_access_key:
+        description: 'AWS Secret Access Key'
+        required: true
+        type: string
+      aws_session_token:
+        description: 'AWS Session Token (for temporary credentials)'
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS Region for the build'
+        required: false
+        type: string
+        default: 'us-east-2'
+      packer_log:
+        description: 'Enable verbose Packer logging (0=off, 1=on)'
+        required: false
+        type: choice
+        options:
+          - '0'
+          - '1'
+        default: '0'
+
+env:
+  PACKER_VERSION: "1.15.2"
+  TEMPLATE_DIR: templates/rhel10
+
+jobs:
+  build-ami:
+    name: Build RHEL 10 Golden AMI
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+      AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+      AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+      AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+      PACKER_LOG: ${{ inputs.packer_log }}
+      # Ansible output for GitHub Actions visibility
+      ANSIBLE_FORCE_COLOR: "true"
+      ANSIBLE_STDOUT_CALLBACK: default
+      ANSIBLE_LOAD_CALLBACK_PLUGINS: "true"
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout repository
+      # ------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Install Packer (pinned version)
+      # ------------------------------------------------------------------
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      # ------------------------------------------------------------------
+      # 3. Configure AWS credentials file
+      # ------------------------------------------------------------------
+      - name: Configure AWS credentials
+        run: |
+          set -x
+          mkdir -p ~/.aws
+          cat > ~/.aws/config <<EOF
+          [default]
+          region = ${{ inputs.aws_region }}
+          output = json
+          EOF
+          cat > ~/.aws/credentials <<EOF
+          [default]
+          aws_access_key_id = ${{ inputs.aws_access_key_id }}
+          aws_secret_access_key = ${{ inputs.aws_secret_access_key }}
+          aws_session_token = ${{ inputs.aws_session_token }}
+          EOF
+          chmod 600 ~/.aws/credentials ~/.aws/config
+          echo "✓ AWS credentials configured"
+
+      # ------------------------------------------------------------------
+      # 4. Verify AWS identity
+      # ------------------------------------------------------------------
+      - name: Verify AWS credentials
+        run: |
+          set -x
+          echo "=== Verifying AWS Identity ==="
+          aws sts get-caller-identity
+          echo "=== AWS credentials verified successfully ==="
+
+      # ------------------------------------------------------------------
+      # 5. Setup Python and Ansible venv
+      # ------------------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create Ansible venv and install dependencies
+        run: |
+          set -x
+          echo "=== Creating Python virtual environment ==="
+          python -m venv .venv
+          source .venv/bin/activate
+          echo "=== Upgrading pip ==="
+          pip install --upgrade pip
+          echo "=== Installing requirements from requirements.txt ==="
+          pip install -r requirements.txt
+          echo "=== Verifying Ansible installation ==="
+          ansible --version
+          echo "✓ Ansible venv ready"
+
+      - name: Install Ansible collections
+        run: |
+          set -x
+          source .venv/bin/activate
+          echo "=== Installing Ansible collections: ansible.posix, community.general ==="
+          ansible-galaxy collection install -v ansible.posix community.general
+          echo "✓ Ansible collections installed"
+
+      # ------------------------------------------------------------------
+      # 6. Packer init (download plugins)
+      # ------------------------------------------------------------------
+      - name: Packer init
+        working-directory: ${{ env.TEMPLATE_DIR }}
+        run: |
+          set -x
+          source $GITHUB_WORKSPACE/.venv/bin/activate
+          echo "=== Packer init: downloading plugins ==="
+          if [ "${{ inputs.packer_log }}" = "1" ]; then
+            packer init -debug .
+          else
+            packer init .
+          fi
+          echo "✓ Packer init complete"
+
+      # ------------------------------------------------------------------
+      # 7. Packer validate
+      # ------------------------------------------------------------------
+      - name: Packer validate
+        working-directory: ${{ env.TEMPLATE_DIR }}
+        run: |
+          set -x
+          source $GITHUB_WORKSPACE/.venv/bin/activate
+          echo "=== Validating Packer template ==="
+          packer validate .
+          echo "✓ Packer template valid"
+
+      # ------------------------------------------------------------------
+      # 8. Packer build
+      # ------------------------------------------------------------------
+      - name: Packer build
+        working-directory: ${{ env.TEMPLATE_DIR }}
+        run: |
+          set -x
+          source $GITHUB_WORKSPACE/.venv/bin/activate
+          echo "=== Starting Packer build of RHEL 10 Golden AMI ==="
+          echo "Region: ${{ inputs.aws_region }}"
+          echo "Verbose logging: ${{ inputs.packer_log }}"
+          if [ "${{ inputs.packer_log }}" = "1" ]; then
+            echo "Running with verbose output..."
+            packer build -color=true -on-error=abort -debug .
+          else
+            packer build -color=true -on-error=abort .
+          fi
+          echo "✓ Packer build complete"
+
+      # ------------------------------------------------------------------
+      # 9. Upload build manifest as artifact
+      # ------------------------------------------------------------------
+      - name: Upload manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-manifest
+          path: ${{ env.TEMPLATE_DIR }}/manifests/*.json
+          retention-days: 90
+
+      - name: Show build result
+        if: always()
+        run: |
+          set -x
+          echo "=== Build artifacts in manifests directory ==="
+          ls -lah ${{ env.TEMPLATE_DIR }}/manifests/ || echo "No manifest files found"
+          if [ -f "${{ env.TEMPLATE_DIR }}/manifests/"*.json ]; then
+            echo "=== Latest manifest content ==="
+            cat $(ls -t ${{ env.TEMPLATE_DIR }}/manifests/*.json 2>/dev/null | head -1) || true
+          fi
+
+      # ------------------------------------------------------------------
+      # 10. Cleanup AWS credentials
+      # ------------------------------------------------------------------
+      - name: Cleanup credentials
+        if: always()
+        run: |
+          set -x
+          rm -rf ~/.aws
+          echo "✓ AWS credentials cleaned up"

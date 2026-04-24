@@ -18,7 +18,6 @@ crash.log
 # Ignore awsvars.env
 *awsvars.env
 *manifests*
-*/work*/
 
 # Explicitly include GitHub Actions workflows
 !.github/
