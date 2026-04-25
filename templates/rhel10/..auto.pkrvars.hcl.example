@@ -1,0 +1,10 @@
+# Copy this file to .auto.pkrvars.hcl and customize for your environment
+# This file will be auto-loaded by Packer
+
+# Networking
+vpc_id    = "vpc-xxxxxxxx"
+subnet_id = "subnet-xxxxxxxx"
+
+# Optional: if your security posture allows private IPs
+# associate_public_ip = false
+# ssh_interface       = "private_ip"
