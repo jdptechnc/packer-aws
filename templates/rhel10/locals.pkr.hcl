@@ -24,8 +24,11 @@ locals {
   })
 
   # Run tags for build instance
+  # GitHubRunId enables the workflow cleanup job to find and terminate this
+  # instance by tag if the build is cancelled or errors before Packer cleans up.
   run_tags = merge(var.run_tags, {
     BuildTimestamp = local.build_timestamp
+    GitHubRunId    = var.github_run_id
   })
 
   # Manifest output path

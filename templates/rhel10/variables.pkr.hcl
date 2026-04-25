@@ -118,6 +118,12 @@ variable "iam_instance_profile" {
   default     = "packer-ssm"
 }
 
+variable "github_run_id" {
+  type        = string
+  description = "GitHub Actions run ID, used as a run tag for identifying and cleaning up build instances. Set automatically via PKR_VAR_github_run_id in CI."
+  default     = "local"
+}
+
 variable "vpc_id" {
   type        = string
   description = "VPC ID where the build instance will be launched. Leave empty to use default VPC."

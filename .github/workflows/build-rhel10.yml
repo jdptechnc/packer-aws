@@ -25,7 +25,7 @@ on:
         description: 'AWS Region for the build'
         required: false
         type: string
-        default: 'us-east-2'
+        default: 'us-east-1'
       aws_vpc_id:
         description: 'AWS VPC ID to use for the build'
         required: false
@@ -61,6 +61,9 @@ jobs:
       AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
       AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
       PACKER_LOG: ${{ inputs.packer_log }}
+      # Pass GitHub run ID to Packer as a run tag so the cleanup job can find
+      # and terminate the build instance if the workflow is cancelled or errors.
+      PKR_VAR_github_run_id: ${{ github.run_id }}
       # Ansible output for GitHub Actions visibility
       ANSIBLE_FORCE_COLOR: "true"
       ANSIBLE_STDOUT_CALLBACK: default
@@ -89,18 +92,20 @@ jobs:
           set -x
           mkdir -p ~/.aws
           cat > ~/.aws/config <<EOF
-          [default]
-          region = ${{ inputs.aws_region }}
-          output = json
-          EOF
+[default]
+region = ${{ inputs.aws_region }}
+output = json
+EOF
           cat > ~/.aws/credentials <<EOF
-          [default]
-          aws_access_key_id = ${{ inputs.aws_access_key_id }}
-          aws_secret_access_key = ${{ inputs.aws_secret_access_key }}
-          aws_session_token = ${{ inputs.aws_session_token }}
-          EOF
+[default]
+aws_access_key_id = ${{ inputs.aws_access_key_id }}
+aws_secret_access_key = ${{ inputs.aws_secret_access_key }}
+aws_session_token = ${{ inputs.aws_session_token }}
+EOF
           chmod 600 ~/.aws/credentials ~/.aws/config
           echo "✓ AWS credentials configured"
+          echo "=== Verifying config region ==="
+          cat ~/.aws/config
 
       # ------------------------------------------------------------------
       # 4. Verify AWS identity
@@ -248,7 +253,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # 10. Cleanup AWS credentials
+      # 11. Cleanup AWS credentials
       # ------------------------------------------------------------------
       - name: Cleanup credentials
         if: always()
@@ -256,3 +261,42 @@ jobs:
           set -x
           rm -rf ~/.aws
           echo "✓ AWS credentials cleaned up"
+
+  # --------------------------------------------------------------------------
+  # Cleanup job: runs after build-ami regardless of outcome (success, failure,
+  # or cancellation). Terminates any EC2 build instances tagged with this
+  # workflow run ID that Packer may have left running.
+  # --------------------------------------------------------------------------
+  terminate-build-instance:
+    name: Terminate stale build instances
+    needs: build-ami
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+      AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+      AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+      AWS_DEFAULT_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+
+    steps:
+      - name: Terminate EC2 instances tagged with this run ID
+        run: |
+          set -euo pipefail
+          echo "=== Checking for stale build instances (run ID: ${{ github.run_id }}) ==="
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:GitHubRunId,Values=${{ github.run_id }}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          if [ -z "${INSTANCE_IDS}" ] || [ "${INSTANCE_IDS}" = "None" ]; then
+            echo "No stale build instances found — Packer cleaned up normally."
+          else
+            echo "Found instances to terminate: ${INSTANCE_IDS}"
+            aws ec2 terminate-instances --instance-ids ${INSTANCE_IDS}
+            echo "✓ Termination requested for: ${INSTANCE_IDS}"
+          fi

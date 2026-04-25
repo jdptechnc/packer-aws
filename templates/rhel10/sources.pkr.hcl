@@ -59,6 +59,10 @@ source "amazon-ebs" "rhel10" {
     encrypted             = var.encrypt_boot
   }
 
+  # Terminate instance on shutdown rather than stop — ensures Packer-launched
+  # instances are never left in a stopped state consuming EBS costs.
+  shutdown_behavior = "terminate"
+
   # SSH/Communicator Settings
   communicator         = "ssh"
   ssh_username         = local.build_username
