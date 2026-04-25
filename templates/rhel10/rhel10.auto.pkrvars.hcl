@@ -35,9 +35,9 @@ instance_type = "t3.medium"
 iam_instance_profile = "packer-ssm"
 
 # Network Configuration
-# Leave empty to use default VPC
-vpc_id    = "vpc-09ae81fb3b2d41490"
-subnet_id = "subnet-0b652758062a68193"
+# VPC and subnet are passed via workflow -var flags; do not set here.
+# vpc_id    = "vpc-09ae81fb3b2d41490"
+# subnet_id = "subnet-0b652758062a68193"
 
 # Set to false if building in a private subnet with NAT
 # associate_public_ip = true
