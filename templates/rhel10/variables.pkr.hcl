@@ -213,7 +213,7 @@ variable "ssh_private_key_file" {
 variable "pause_before_ssm" {
   type        = string
   description = "Pause before SSM connection."
-  default     = "10s"
+  default     = "20s"
 }
 
 // Tags

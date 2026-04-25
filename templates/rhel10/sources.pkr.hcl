@@ -64,6 +64,9 @@ source "amazon-ebs" "rhel10" {
   ssh_username         = local.build_username
   ssh_timeout          = var.communicator_timeout
   ssh_pty              = true
+  
+  # SSM: pause to allow SSM agent to register before Packer opens the session
+  pause_before_ssm = var.pause_before_ssm
 
   # EC2 Key Pair - use existing key pair or let Packer create a temporary one
   ssh_keypair_name     = var.ssh_keypair_name != "" ? var.ssh_keypair_name : null
