@@ -38,6 +38,57 @@ source "amazon-ebs" "rhel10" {
   region               = var.aws_region
   iam_instance_profile = var.iam_instance_profile != "" ? var.iam_instance_profile : null
 
+  # Temporary IAM instance profile for SSM connectivity when no iam_instance_profile is set.
+  # Packer creates this role, attaches it for the build, and deletes it on completion.
+  # This block is ignored when iam_instance_profile is set (the two are mutually exclusive
+  # only if iam_instance_profile is non-null; a null value defers to this block).
+  # Equivalent to AWS managed policy: AmazonSSMManagedInstanceCore
+  temporary_iam_instance_profile_policy_document {
+    Statement {
+      Action = [
+        "ssm:DescribeAssociation",
+        "ssm:GetDeployablePatchSnapshotForInstance",
+        "ssm:GetDocument",
+        "ssm:DescribeDocument",
+        "ssm:GetManifest",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:ListAssociations",
+        "ssm:ListInstanceAssociations",
+        "ssm:PutInventory",
+        "ssm:PutComplianceItems",
+        "ssm:PutConfigurePackageResult",
+        "ssm:UpdateAssociationStatus",
+        "ssm:UpdateInstanceAssociationStatus",
+        "ssm:UpdateInstanceInformation",
+      ]
+      Effect   = "Allow"
+      Resource = ["*"]
+    }
+    Statement {
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Effect   = "Allow"
+      Resource = ["*"]
+    }
+    Statement {
+      Action = [
+        "ec2messages:AcknowledgeMessage",
+        "ec2messages:DeleteMessage",
+        "ec2messages:FailMessage",
+        "ec2messages:GetEndpoint",
+        "ec2messages:GetMessages",
+        "ec2messages:SendReply",
+      ]
+      Effect   = "Allow"
+      Resource = ["*"]
+    }
+  }
+
   # VPC/Network Configuration
   vpc_id                      = var.vpc_id != "" ? var.vpc_id : null
   subnet_id                   = var.subnet_id != "" ? var.subnet_id : null
