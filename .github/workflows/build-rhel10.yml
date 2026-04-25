@@ -142,7 +142,7 @@ jobs:
           source $GITHUB_WORKSPACE/.venv/bin/activate
           echo "=== Packer init: downloading plugins ==="
           if [ "${{ inputs.packer_log }}" = "1" ]; then
-            packer init -debug .
+            packer init .
           else
             packer init .
           fi
