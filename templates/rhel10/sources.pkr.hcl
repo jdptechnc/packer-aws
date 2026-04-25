@@ -65,19 +65,25 @@ source "amazon-ebs" "rhel10" {
 
   # RHEL 10 does not ship with SSM agent pre-installed. Install and start it at
   # boot so the instance registers with SSM before Packer opens the session.
-  # Requires an S3 Gateway VPC endpoint (free) so the private instance can
-  # reach the S3 download URL without an internet gateway.
+  #
+  # VPC REQUIREMENTS for private subnet builds (no public IP / no IGW):
+  #   1. S3 Gateway endpoint       — for downloading the SSM agent RPM
+  #   2. ssm Interface endpoint    — SSM API calls
+  #   3. ssmmessages Interface ep  — session data channel
+  #   4. ec2messages Interface ep  — SSM agent heartbeat
+  # All Interface endpoints need private DNS enabled and their security group
+  # must allow inbound TCP 443 from the build subnet's CIDR.
   user_data = <<-USER_DATA
-    #!/bin/bash
-    set -x
-    exec >> /var/log/user-data.log 2>&1
-    echo "=== Installing amazon-ssm-agent ==="
-    dnf install -y \
-      "https://s3.us-east-1.amazonaws.com/amazon-ssm-agent/latest/linux_amd64/amazon-ssm-agent.rpm" \
-      || dnf install -y amazon-ssm-agent \
-      || true
-    systemctl enable --now amazon-ssm-agent
-    echo "SSM agent status: $(systemctl is-active amazon-ssm-agent)"
+  #!/bin/bash
+  set -x
+  exec >> /var/log/user-data.log 2>&1
+  echo "=== Installing amazon-ssm-agent ==="
+  dnf install -y \
+    "https://s3.us-east-1.amazonaws.com/amazon-ssm-agent/latest/linux_amd64/amazon-ssm-agent.rpm" \
+    || dnf install -y amazon-ssm-agent \
+    || true
+  systemctl enable --now amazon-ssm-agent
+  echo "SSM agent status: $(systemctl is-active amazon-ssm-agent)"
   USER_DATA
 
   # SSH/Communicator Settings
