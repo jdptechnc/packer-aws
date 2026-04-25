@@ -91,17 +91,17 @@ jobs:
         run: |
           set -x
           mkdir -p ~/.aws
-          cat > ~/.aws/config <<EOF
-[default]
-region = ${{ inputs.aws_region }}
-output = json
-EOF
-          cat > ~/.aws/credentials <<EOF
-[default]
-aws_access_key_id = ${{ inputs.aws_access_key_id }}
-aws_secret_access_key = ${{ inputs.aws_secret_access_key }}
-aws_session_token = ${{ inputs.aws_session_token }}
-EOF
+          {
+            echo '[default]'
+            echo 'region = ${{ inputs.aws_region }}'
+            echo 'output = json'
+          } > ~/.aws/config
+          {
+            echo '[default]'
+            echo 'aws_access_key_id = ${{ inputs.aws_access_key_id }}'
+            echo 'aws_secret_access_key = ${{ inputs.aws_secret_access_key }}'
+            echo 'aws_session_token = ${{ inputs.aws_session_token }}'
+          } > ~/.aws/credentials
           chmod 600 ~/.aws/credentials ~/.aws/config
           echo "✓ AWS credentials configured"
           echo "=== Verifying config region ==="
