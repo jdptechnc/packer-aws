@@ -26,6 +26,16 @@ on:
         required: false
         type: string
         default: 'us-east-2'
+      aws_vpc_id:
+        description: 'AWS VPC ID to use for the build'
+        required: false
+        type: string
+        default: vpc-0e8680b6eece6c44c
+      aws_subnet_id:
+        description: 'AWS Subnet ID to use for the build' # can first available be selected by Packer?
+        required: false
+        type: string
+        default: subnet-08c187dd023fb1a9b
       packer_log:
         description: 'Enable verbose Packer logging (0=off, 1=on)'
         required: false
