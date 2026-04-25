@@ -210,6 +210,9 @@ jobs:
           packer_cmd="${packer_cmd} -var ssh_interface=session_manager"
           packer_cmd="${packer_cmd} -var associate_public_ip=false"
 
+          # IAM: ensure packer-ssm profile is used regardless of pkrvars
+          packer_cmd="${packer_cmd} -var iam_instance_profile=packer-ssm"
+
           # Pass VPC and subnet if provided
           if [ -n "${{ inputs.aws_vpc_id }}" ]; then
             packer_cmd="${packer_cmd} -var 'vpc_id=${{ inputs.aws_vpc_id }}'"

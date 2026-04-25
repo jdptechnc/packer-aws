@@ -63,6 +63,23 @@ source "amazon-ebs" "rhel10" {
   # instances are never left in a stopped state consuming EBS costs.
   shutdown_behavior = "terminate"
 
+  # RHEL 10 does not ship with SSM agent pre-installed. Install and start it at
+  # boot so the instance registers with SSM before Packer opens the session.
+  # Requires an S3 Gateway VPC endpoint (free) so the private instance can
+  # reach the S3 download URL without an internet gateway.
+  user_data = <<-USER_DATA
+    #!/bin/bash
+    set -x
+    exec >> /var/log/user-data.log 2>&1
+    echo "=== Installing amazon-ssm-agent ==="
+    dnf install -y \
+      "https://s3.us-east-1.amazonaws.com/amazon-ssm-agent/latest/linux_amd64/amazon-ssm-agent.rpm" \
+      || dnf install -y amazon-ssm-agent \
+      || true
+    systemctl enable --now amazon-ssm-agent
+    echo "SSM agent status: $(systemctl is-active amazon-ssm-agent)"
+  USER_DATA
+
   # SSH/Communicator Settings
   communicator         = "ssh"
   ssh_username         = local.build_username
