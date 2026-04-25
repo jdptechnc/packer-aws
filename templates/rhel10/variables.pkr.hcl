@@ -115,7 +115,7 @@ variable "instance_type" {
 variable "iam_instance_profile" {
   type        = string
   description = "IAM instance profile to attach to the build instance. Required for SSM Session Manager."
-  default     = ""
+  default     = "packer-ssm"
 }
 
 variable "vpc_id" {
