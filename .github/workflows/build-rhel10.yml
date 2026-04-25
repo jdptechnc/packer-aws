@@ -143,7 +143,20 @@ jobs:
           echo "✓ Ansible collections installed"
 
       # ------------------------------------------------------------------
-      # 6. Packer init (download plugins)
+      # 6. Install AWS Session Manager Plugin
+      # ------------------------------------------------------------------
+      - name: Install AWS Session Manager Plugin
+        run: |
+          set -x
+          echo "=== Installing AWS Session Manager Plugin ==="
+          curl -fsSLo /tmp/session-manager-plugin.deb \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb"
+          sudo dpkg -i /tmp/session-manager-plugin.deb
+          session-manager-plugin --version
+          echo "✓ Session Manager Plugin installed"
+
+      # ------------------------------------------------------------------
+      # 7. Packer init (download plugins)
       # ------------------------------------------------------------------
       - name: Packer init
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -159,7 +172,7 @@ jobs:
           echo "✓ Packer init complete"
 
       # ------------------------------------------------------------------
-      # 7. Packer validate
+      # 8. Packer validate
       # ------------------------------------------------------------------
       - name: Packer validate
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -171,7 +184,7 @@ jobs:
           echo "✓ Packer template valid"
 
       # ------------------------------------------------------------------
-      # 8. Packer build
+      # 9. Packer build
       # ------------------------------------------------------------------
       - name: Packer build
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -179,36 +192,41 @@ jobs:
           set -x
           source $GITHUB_WORKSPACE/.venv/bin/activate
           echo "=== Starting Packer build of RHEL 10 Golden AMI ==="
-          echo "Region: ${{ inputs.aws_region }}"
-          echo "VPC ID: ${{ inputs.aws_vpc_id }}"
+          echo "Region:    ${{ inputs.aws_region }}"
+          echo "VPC ID:    ${{ inputs.aws_vpc_id }}"
           echo "Subnet ID: ${{ inputs.aws_subnet_id }}"
-          echo "Verbose logging: ${{ inputs.packer_log }}"
-          
+          echo "Interface: session_manager (SSM)"
+          echo "Verbose:   ${{ inputs.packer_log }}"
+
           # Build packer build command with -var flags for runtime inputs
           packer_cmd="packer build -color=true -on-error=abort"
-          
+
+          # Network: SSM Session Manager — no public IP, no direct SSH required
+          packer_cmd="${packer_cmd} -var ssh_interface=session_manager"
+          packer_cmd="${packer_cmd} -var associate_public_ip=false"
+
           # Pass VPC and subnet if provided
           if [ -n "${{ inputs.aws_vpc_id }}" ]; then
-            packer_cmd="${packer_cmd} -var vpc_id=${{ inputs.aws_vpc_id }}"
+            packer_cmd="${packer_cmd} -var 'vpc_id=${{ inputs.aws_vpc_id }}'"
           fi
           if [ -n "${{ inputs.aws_subnet_id }}" ]; then
-            packer_cmd="${packer_cmd} -var subnet_id=${{ inputs.aws_subnet_id }}"
+            packer_cmd="${packer_cmd} -var 'subnet_id=${{ inputs.aws_subnet_id }}'"
           fi
-          
+
           # Add debug flag if verbose logging enabled
           if [ "${{ inputs.packer_log }}" = "1" ]; then
             echo "Running with verbose output..."
             packer_cmd="${packer_cmd} -debug"
           fi
-          
+
           packer_cmd="${packer_cmd} ."
-          
+
           echo "Executing: ${packer_cmd}"
           eval "${packer_cmd}"
           echo "✓ Packer build complete"
 
       # ------------------------------------------------------------------
-      # 9. Upload build manifest as artifact
+      # 10. Upload build manifest as artifact
       # ------------------------------------------------------------------
       - name: Upload manifest
         if: always()

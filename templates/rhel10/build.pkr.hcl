@@ -19,7 +19,8 @@ build {
     user          = local.build_username
     playbook_file = "${abspath(path.root)}/ansible/configure.yml"
     roles_path    = "${abspath(path.root)}/ansible/roles"
-    use_proxy     = false  # Connect directly to instance, bypass Packer's SSH proxy
+    # use_proxy = true is the default and required for SSM Session Manager connections.
+    # Ansible talks to Packer's local SSH proxy; Packer manages the SSM tunnel underneath.
     ansible_env_vars = [
       "ANSIBLE_CONFIG=${abspath(path.root)}/ansible/ansible.cfg",
       "ANSIBLE_HOST_KEY_CHECKING=False",
@@ -40,7 +41,6 @@ build {
     user          = local.build_username
     playbook_file = "${abspath(path.root)}/ansible/security.yml"
     roles_path    = "${abspath(path.root)}/ansible/roles"
-    use_proxy     = false
     ansible_env_vars = [
       "ANSIBLE_CONFIG=${abspath(path.root)}/ansible/ansible.cfg",
       "ANSIBLE_HOST_KEY_CHECKING=False",
@@ -82,7 +82,6 @@ build {
     user          = local.build_username
     playbook_file = "${abspath(path.root)}/ansible/clean.yml"
     roles_path    = "${abspath(path.root)}/ansible/roles"
-    use_proxy     = false  # Connect directly to instance, bypass Packer's SSH proxy
     ansible_env_vars = [
       "ANSIBLE_CONFIG=${abspath(path.root)}/ansible/ansible.cfg",
       "ANSIBLE_HOST_KEY_CHECKING=False",
