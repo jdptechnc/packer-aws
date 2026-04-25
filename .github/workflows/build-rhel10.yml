@@ -35,7 +35,7 @@ on:
         description: 'AWS Subnet ID to use for the build' # can first available be selected by Packer?
         required: false
         type: string
-        default: subnet-08c187dd023fb1a9b
+        default: subnet-09365552d4c68e8b2
       packer_log:
         description: 'Enable verbose Packer logging (0=off, 1=on)'
         required: false
