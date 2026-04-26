@@ -119,9 +119,7 @@ jobs:
               {"Key": "Purpose", "Value": "packer-runner"}
             ]
           pre-runner-script: |
-            dnf update -y
-            dnf install -y docker git libicu python3-pip unzip
-            systemctl enable docker
+            dnf install -y git libicu python3-pip unzip
 
   # -----------------------------------------------------------------------
   # Job 2: Build the AMI on the self-hosted runner (same VPC, direct SSH)
