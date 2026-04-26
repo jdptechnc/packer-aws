@@ -213,7 +213,15 @@ jobs:
           echo "✓ Ansible collections installed"
 
       # ------------------------------------------------------------------
-      # 6. Packer init (download plugins)
+      # 6. Write Ansible Vault password file
+      # ------------------------------------------------------------------
+      - name: Write Ansible Vault password file
+        run: |
+          printf '%s' "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/.vault-pass
+          chmod 600 /tmp/.vault-pass
+
+      # ------------------------------------------------------------------
+      # 7. Packer init (download plugins)
       # ------------------------------------------------------------------
       - name: Packer init
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -224,7 +232,7 @@ jobs:
           echo "✓ Packer init complete"
 
       # ------------------------------------------------------------------
-      # 7. Packer validate
+      # 8. Packer validate
       # ------------------------------------------------------------------
       - name: Packer validate
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -235,7 +243,7 @@ jobs:
           echo "✓ Packer template valid"
 
       # ------------------------------------------------------------------
-      # 8. Packer build
+      # 9. Packer build
       # ------------------------------------------------------------------
       - name: Packer build
         working-directory: ${{ env.TEMPLATE_DIR }}
@@ -275,7 +283,7 @@ jobs:
           echo "✓ Packer build complete"
 
       # ------------------------------------------------------------------
-      # 9. Upload build manifest as artifact
+      # 10. Upload build manifest as artifact
       # ------------------------------------------------------------------
       - name: Upload manifest
         if: always()
@@ -293,7 +301,7 @@ jobs:
           ls -lah ${{ env.TEMPLATE_DIR }}/manifests/ || echo "No manifest files found"
 
       # ------------------------------------------------------------------
-      # 10. Cleanup AWS credentials
+      # 11. Cleanup AWS credentials
       # ------------------------------------------------------------------
       - name: Cleanup credentials
         if: always()
