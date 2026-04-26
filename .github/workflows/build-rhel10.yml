@@ -103,7 +103,7 @@ jobs:
 
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-actions-runner@v2
+        uses: machulav/ec2-github-runner@v2
         with:
           mode: start
           github-token: ${{ secrets.GH_PAT }}
@@ -316,7 +316,7 @@ jobs:
 
     steps:
       - name: Stop EC2 runner
-        uses: machulav/ec2-github-actions-runner@v2
+        uses: machulav/ec2-github-runner@v2
         if: ${{ needs.start-runner.outputs.ec2-instance-id }}
         with:
           mode: stop
