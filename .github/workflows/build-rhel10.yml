@@ -249,6 +249,8 @@ jobs:
         working-directory: ${{ env.TEMPLATE_DIR }}
         run: |
           set -x
+          # Ensure manifests directory exists before Packer tries to write to it
+          mkdir -p manifests
           source ${{ github.workspace }}/.venv/bin/activate
           echo "=== Starting Packer build of RHEL 10 Golden AMI ==="
           echo "Region:    ${{ inputs.aws_region }}"
@@ -287,6 +289,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Upload manifest
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: packer-manifest
