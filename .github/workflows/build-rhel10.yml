@@ -135,6 +135,8 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
       AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
       AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      HOME: /root
       PACKER_LOG: ${{ inputs.packer_log }}
       PKR_VAR_github_run_id: ${{ github.run_id }}
       ANSIBLE_FORCE_COLOR: "true"
