@@ -216,12 +216,6 @@ variable "ssh_private_key_file" {
   default     = ""
 }
 
-variable "pause_before_ssm" {
-  type        = string
-  description = "Pause before SSM connection. Allow enough time for user_data to install SSM agent and for the agent to register with the SSM service."
-  default     = "120s"
-}
-
 // Tags
 
 variable "tags" {

@@ -1,8 +1,21 @@
 # .github/workflows/build-rhel10.yml
 # Manual-trigger workflow for building RHEL 10 Golden AMI with Packer
 #
-# Usage: Actions tab → "Build RHEL 10 AMI" → Run workflow
-# Required inputs: AWS credentials (access key, secret key, session token)
+# Architecture:
+#   1. start-runner  — launches an ephemeral AL2023 EC2 instance in the target
+#                      VPC and registers it as a GitHub Actions self-hosted runner
+#   2. build-ami     — runs Packer ON that runner, SSH to build instance via
+#                      private_ip (no SSM, no public IP on build instance)
+#   3. stop-runner   — deregisters the runner, terminates runner + any stale
+#                      build instances, deletes temporary security group
+#
+# Prerequisites:
+#   - Repository secret GH_PAT: GitHub Personal Access Token (classic) with
+#     'repo' scope — used to register/deregister the ephemeral runner
+#   - The runner subnet MUST have outbound internet access (NAT gateway or
+#     internet gateway with public IP) so the runner can reach GitHub, PyPI,
+#     HashiCorp releases, and Ansible Galaxy
+#   - AWS credentials with EC2, IAM permissions
 
 name: Build RHEL 10 AMI
 
@@ -27,12 +40,12 @@ on:
         type: string
         default: 'us-east-1'
       aws_vpc_id:
-        description: 'AWS VPC ID to use for the build'
+        description: 'VPC ID for runner + build instances'
         required: false
         type: string
         default: vpc-0e8680b6eece6c44c
       aws_subnet_id:
-        description: 'AWS Subnet ID to use for the build' # can first available be selected by Packer?
+        description: 'Subnet ID (must have outbound internet for runner)'
         required: false
         type: string
         default: subnet-09365552d4c68e8b2
@@ -50,9 +63,70 @@ env:
   TEMPLATE_DIR: templates/rhel10
 
 jobs:
+  # -----------------------------------------------------------------------
+  # Job 1: Launch an ephemeral EC2 self-hosted runner in the target VPC
+  # -----------------------------------------------------------------------
+  start-runner:
+    name: Start EC2 runner
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+      runner-sg-id: ${{ steps.runner-sg.outputs.sg_id }}
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+      AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+      AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+      AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+
+    steps:
+      - name: Look up latest Amazon Linux 2023 AMI
+        id: ami
+        run: |
+          AMI_ID=$(aws ssm get-parameters \
+            --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+            --query "Parameters[0].Value" --output text)
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+          echo "Runner AMI: ${AMI_ID}"
+
+      - name: Create runner security group
+        id: runner-sg
+        run: |
+          SG_ID=$(aws ec2 create-security-group \
+            --group-name "gha-runner-${{ github.run_id }}" \
+            --description "Ephemeral SG for GitHub Actions runner - run ${{ github.run_id }}" \
+            --vpc-id "${{ inputs.aws_vpc_id }}" \
+            --query 'GroupId' --output text)
+          echo "sg_id=${SG_ID}" >> "$GITHUB_OUTPUT"
+          echo "Runner SG: ${SG_ID}"
+
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-actions-runner@v2
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PAT }}
+          ec2-image-id: ${{ steps.ami.outputs.ami_id }}
+          ec2-instance-type: t3.medium
+          subnet-id: ${{ inputs.aws_subnet_id }}
+          security-group-id: ${{ steps.runner-sg.outputs.sg_id }}
+          aws-resource-tags: >
+            [
+              {"Key": "Name", "Value": "gha-runner-${{ github.run_id }}"},
+              {"Key": "GitHubRunId", "Value": "${{ github.run_id }}"},
+              {"Key": "Purpose", "Value": "packer-runner"}
+            ]
+          pre-runner-script: |
+            dnf install -y python3-pip unzip
+
+  # -----------------------------------------------------------------------
+  # Job 2: Build the AMI on the self-hosted runner (same VPC, direct SSH)
+  # -----------------------------------------------------------------------
   build-ami:
     name: Build RHEL 10 Golden AMI
-    runs-on: ubuntu-latest
+    needs: start-runner
+    runs-on: ${{ needs.start-runner.outputs.label }}
     timeout-minutes: 60
 
     env:
@@ -61,10 +135,7 @@ jobs:
       AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
       AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
       PACKER_LOG: ${{ inputs.packer_log }}
-      # Pass GitHub run ID to Packer as a run tag so the cleanup job can find
-      # and terminate the build instance if the workflow is cancelled or errors.
       PKR_VAR_github_run_id: ${{ github.run_id }}
-      # Ansible output for GitHub Actions visibility
       ANSIBLE_FORCE_COLOR: "true"
       ANSIBLE_STDOUT_CALLBACK: default
       ANSIBLE_LOAD_CALLBACK_PLUGINS: "true"
@@ -77,12 +148,17 @@ jobs:
         uses: actions/checkout@v4
 
       # ------------------------------------------------------------------
-      # 2. Install Packer (pinned version)
+      # 2. Install Packer
       # ------------------------------------------------------------------
-      - name: Setup Packer
-        uses: hashicorp/setup-packer@main
-        with:
-          version: ${{ env.PACKER_VERSION }}
+      - name: Install Packer
+        run: |
+          set -x
+          curl -fsSL "https://releases.hashicorp.com/packer/${{ env.PACKER_VERSION }}/packer_${{ env.PACKER_VERSION }}_linux_amd64.zip" \
+            -o /tmp/packer.zip
+          sudo unzip -o /tmp/packer.zip -d /usr/local/bin/
+          rm /tmp/packer.zip
+          packer --version
+          echo "✓ Packer ${{ env.PACKER_VERSION }} installed"
 
       # ------------------------------------------------------------------
       # 3. Configure AWS credentials file
@@ -104,8 +180,6 @@ jobs:
           } > ~/.aws/credentials
           chmod 600 ~/.aws/credentials ~/.aws/config
           echo "✓ AWS credentials configured"
-          echo "=== Verifying config region ==="
-          cat ~/.aws/config
 
       # ------------------------------------------------------------------
       # 4. Verify AWS identity
@@ -113,29 +187,18 @@ jobs:
       - name: Verify AWS credentials
         run: |
           set -x
-          echo "=== Verifying AWS Identity ==="
           aws sts get-caller-identity
-          echo "=== AWS credentials verified successfully ==="
 
       # ------------------------------------------------------------------
-      # 5. Setup Python and Ansible venv
+      # 5. Setup Ansible venv
       # ------------------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Create Ansible venv and install dependencies
         run: |
           set -x
-          echo "=== Creating Python virtual environment ==="
-          python -m venv .venv
+          python3 -m venv .venv
           source .venv/bin/activate
-          echo "=== Upgrading pip ==="
           pip install --upgrade pip
-          echo "=== Installing requirements from requirements.txt ==="
           pip install -r requirements.txt
-          echo "=== Verifying Ansible installation ==="
           ansible --version
           echo "✓ Ansible venv ready"
 
@@ -143,77 +206,53 @@ jobs:
         run: |
           set -x
           source .venv/bin/activate
-          echo "=== Installing Ansible collections: ansible.posix, community.general ==="
           ansible-galaxy collection install -v ansible.posix community.general
           echo "✓ Ansible collections installed"
 
       # ------------------------------------------------------------------
-      # 6. Install AWS Session Manager Plugin
-      # ------------------------------------------------------------------
-      - name: Install AWS Session Manager Plugin
-        run: |
-          set -x
-          echo "=== Installing AWS Session Manager Plugin ==="
-          curl -fsSLo /tmp/session-manager-plugin.deb \
-            "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb"
-          sudo dpkg -i /tmp/session-manager-plugin.deb
-          session-manager-plugin --version
-          echo "✓ Session Manager Plugin installed"
-
-      # ------------------------------------------------------------------
-      # 7. Packer init (download plugins)
+      # 6. Packer init (download plugins)
       # ------------------------------------------------------------------
       - name: Packer init
         working-directory: ${{ env.TEMPLATE_DIR }}
         run: |
           set -x
-          source $GITHUB_WORKSPACE/.venv/bin/activate
-          echo "=== Packer init: downloading plugins ==="
-          if [ "${{ inputs.packer_log }}" = "1" ]; then
-            packer init .
-          else
-            packer init .
-          fi
+          source ${{ github.workspace }}/.venv/bin/activate
+          packer init .
           echo "✓ Packer init complete"
 
       # ------------------------------------------------------------------
-      # 8. Packer validate
+      # 7. Packer validate
       # ------------------------------------------------------------------
       - name: Packer validate
         working-directory: ${{ env.TEMPLATE_DIR }}
         run: |
           set -x
-          source $GITHUB_WORKSPACE/.venv/bin/activate
-          echo "=== Validating Packer template ==="
+          source ${{ github.workspace }}/.venv/bin/activate
           packer validate .
           echo "✓ Packer template valid"
 
       # ------------------------------------------------------------------
-      # 9. Packer build
+      # 8. Packer build
       # ------------------------------------------------------------------
       - name: Packer build
         working-directory: ${{ env.TEMPLATE_DIR }}
         run: |
           set -x
-          source $GITHUB_WORKSPACE/.venv/bin/activate
+          source ${{ github.workspace }}/.venv/bin/activate
           echo "=== Starting Packer build of RHEL 10 Golden AMI ==="
           echo "Region:    ${{ inputs.aws_region }}"
           echo "VPC ID:    ${{ inputs.aws_vpc_id }}"
           echo "Subnet ID: ${{ inputs.aws_subnet_id }}"
-          echo "Interface: session_manager (SSM)"
+          echo "Interface: private_ip (direct SSH from runner)"
           echo "Verbose:   ${{ inputs.packer_log }}"
 
-          # Build packer build command with -var flags for runtime inputs
           packer_cmd="packer build -color=true -on-error=abort"
 
-          # Network: SSM Session Manager — no public IP, no direct SSH required
-          packer_cmd="${packer_cmd} -var ssh_interface=session_manager"
+          # Direct SSH via private IP — runner is in the same VPC
+          packer_cmd="${packer_cmd} -var ssh_interface=private_ip"
           packer_cmd="${packer_cmd} -var associate_public_ip=false"
 
-          # IAM: ensure packer-ssm profile is used regardless of pkrvars
-          packer_cmd="${packer_cmd} -var iam_instance_profile=packer-ssm"
-
-          # Pass VPC and subnet if provided
+          # VPC and subnet
           if [ -n "${{ inputs.aws_vpc_id }}" ]; then
             packer_cmd="${packer_cmd} -var 'vpc_id=${{ inputs.aws_vpc_id }}'"
           fi
@@ -221,7 +260,6 @@ jobs:
             packer_cmd="${packer_cmd} -var 'subnet_id=${{ inputs.aws_subnet_id }}'"
           fi
 
-          # Add debug flag if verbose logging enabled
           if [ "${{ inputs.packer_log }}" = "1" ]; then
             echo "Running with verbose output..."
             packer_cmd="${packer_cmd} -debug"
@@ -234,7 +272,7 @@ jobs:
           echo "✓ Packer build complete"
 
       # ------------------------------------------------------------------
-      # 10. Upload build manifest as artifact
+      # 9. Upload build manifest as artifact
       # ------------------------------------------------------------------
       - name: Upload manifest
         if: always()
@@ -250,32 +288,25 @@ jobs:
           set -x
           echo "=== Build artifacts in manifests directory ==="
           ls -lah ${{ env.TEMPLATE_DIR }}/manifests/ || echo "No manifest files found"
-          if [ -f "${{ env.TEMPLATE_DIR }}/manifests/"*.json ]; then
-            echo "=== Latest manifest content ==="
-            cat $(ls -t ${{ env.TEMPLATE_DIR }}/manifests/*.json 2>/dev/null | head -1) || true
-          fi
 
       # ------------------------------------------------------------------
-      # 11. Cleanup AWS credentials
+      # 10. Cleanup AWS credentials
       # ------------------------------------------------------------------
       - name: Cleanup credentials
         if: always()
         run: |
-          set -x
           rm -rf ~/.aws
           echo "✓ AWS credentials cleaned up"
 
-  # --------------------------------------------------------------------------
-  # Cleanup job: runs after build-ami regardless of outcome (success, failure,
-  # or cancellation). Terminates any EC2 build instances tagged with this
-  # workflow run ID that Packer may have left running.
-  # --------------------------------------------------------------------------
-  terminate-build-instance:
-    name: Terminate stale build instances
-    needs: build-ami
+  # -----------------------------------------------------------------------
+  # Job 3: Stop the runner and clean up all resources
+  # -----------------------------------------------------------------------
+  stop-runner:
+    name: Stop EC2 runner + cleanup
+    needs: [start-runner, build-ami]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     env:
       AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
@@ -284,7 +315,31 @@ jobs:
       AWS_DEFAULT_REGION: ${{ inputs.aws_region || 'us-east-1' }}
 
     steps:
-      - name: Terminate EC2 instances tagged with this run ID
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-actions-runner@v2
+        if: ${{ needs.start-runner.outputs.ec2-instance-id }}
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PAT }}
+          label: ${{ needs.start-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-runner.outputs.ec2-instance-id }}
+
+      - name: Delete runner security group
+        if: always()
+        run: |
+          SG_ID="${{ needs.start-runner.outputs.runner-sg-id }}"
+          if [ -n "${SG_ID}" ]; then
+            echo "Waiting for runner instance to fully terminate..."
+            aws ec2 wait instance-terminated \
+              --instance-ids "${{ needs.start-runner.outputs.ec2-instance-id }}" \
+              2>/dev/null || sleep 30
+            aws ec2 delete-security-group --group-id "${SG_ID}" 2>/dev/null \
+              && echo "✓ Deleted runner SG: ${SG_ID}" \
+              || echo "WARN: Could not delete SG ${SG_ID} (may already be gone)"
+          fi
+
+      - name: Terminate stale build instances
+        if: always()
         run: |
           set -euo pipefail
           echo "=== Checking for stale build instances (run ID: ${{ github.run_id }}) ==="

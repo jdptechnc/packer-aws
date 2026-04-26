@@ -30,9 +30,8 @@ source_ami_filter_owner = "309956199498"  # Red Hat's AWS account
 # Instance Configuration
 instance_type = "t3.medium"
 
-# IAM Instance Profile - Required for SSM Session Manager
-# This profile needs AmazonSSMManagedInstanceCore policy attached
-iam_instance_profile = "packer-ssm"
+# IAM Instance Profile (optional — only needed for SSM Session Manager)
+# iam_instance_profile = "packer-ssm"
 
 # Network Configuration
 # VPC and subnet are passed via workflow -var flags; do not set here.
@@ -43,9 +42,9 @@ iam_instance_profile = "packer-ssm"
 # associate_public_ip = true
 # ssh_interface       = "public_ip"
 
-# For private subnet builds, use:
+# For private subnet builds with self-hosted runner in same VPC:
 associate_public_ip = false
-ssh_interface       = "private_ip"  # or "session_manager" for SSM
+ssh_interface       = "private_ip"
 
 # EBS Volume Configuration
 root_volume_size       = 30

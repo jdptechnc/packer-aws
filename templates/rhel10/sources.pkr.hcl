@@ -63,83 +63,11 @@ source "amazon-ebs" "rhel10" {
   # instances are never left in a stopped state consuming EBS costs.
   shutdown_behavior = "terminate"
 
-  # RHEL 10 does not ship with SSM agent pre-installed. Install and start it at
-  # boot so the instance registers with SSM before Packer opens the session.
-  #
-  # IAM PERMISSIONS required on packer-ssm role (beyond AmazonSSMManagedInstanceCore):
-  #   s3:PutObject   on arn:aws:s3:::jdp-packer-debug-logs/*  — log upload
-  #   ec2:CreateTags on *                                      — status tag
-  #
-  # VPC ENDPOINTS required (private subnet, no IGW):
-  #   S3 Gateway           — SSM agent RPM download + log upload
-  #   ssm Interface        — SSM API
-  #   ssmmessages Interface— session data channel
-  #   ec2messages Interface— SSM agent heartbeat
-  #   ec2 Interface        — ec2:CreateTags for status signal
-  # Interface endpoints: private DNS enabled, SG allows inbound TCP 443 from subnet CIDR.
-  user_data = <<-USER_DATA
-  #!/bin/bash
-  exec >> /var/log/user-data.log 2>&1
-  set -x
-
-  # Instance metadata via IMDSv2
-  IMDS_TOKEN=$(curl -fsSL -X PUT "http://169.254.169.254/latest/api/token" \
-    -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-  INSTANCE_ID=$(curl -fsSL -H "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
-    http://169.254.169.254/latest/meta-data/instance-id)
-  REGION=$(curl -fsSL -H "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
-    http://169.254.169.254/latest/meta-data/placement/region)
-  echo "Instance: $${INSTANCE_ID}  Region: $${REGION}"
-
-  # Exit handler — runs on any exit (success or failure).
-  # Uploads /var/log/user-data.log to S3 and tags the instance with final status.
-  USER_DATA_STATUS="failed"
-  cleanup() {
-    set +e
-    if command -v aws &>/dev/null; then
-      aws s3 cp /var/log/user-data.log \
-        "s3://jdp-packer-debug-logs/$${INSTANCE_ID}/user-data.log" \
-        --region "$${REGION}"
-      aws ec2 create-tags \
-        --region "$${REGION}" \
-        --resources "$${INSTANCE_ID}" \
-        --tags "Key=UserDataStatus,Value=$${USER_DATA_STATUS}"
-    else
-      echo "WARN: aws CLI not available — skipping S3 upload and EC2 tag"
-    fi
-  }
-  trap cleanup EXIT
-
-  # Install AWS CLI so cleanup() can signal status.
-  if ! command -v aws &>/dev/null; then
-    echo "=== Installing AWS CLI ==="
-    dnf install -y awscli || echo "WARN: awscli not available from repos"
-  fi
-
-  # Install SSM agent — not pre-installed on RHEL 10.
-  echo "=== Installing amazon-ssm-agent ==="
-  dnf install -y \
-    "https://s3.$${REGION}.amazonaws.com/amazon-ssm-agent/latest/linux_amd64/amazon-ssm-agent.rpm" \
-    || dnf install -y amazon-ssm-agent \
-    || { echo "ERROR: SSM agent install failed"; exit 1; }
-
-  systemctl enable --now amazon-ssm-agent
-  systemctl is-active --quiet amazon-ssm-agent \
-    || { echo "ERROR: SSM agent failed to start"; exit 1; }
-  echo "SSM agent is active"
-
-  USER_DATA_STATUS="success"
-  echo "=== user-data complete ==="
-  USER_DATA
-
   # SSH/Communicator Settings
   communicator         = "ssh"
   ssh_username         = local.build_username
   ssh_timeout          = var.communicator_timeout
   ssh_pty              = true
-  
-  # SSM: pause to allow SSM agent to register before Packer opens the session
-  pause_before_ssm = var.pause_before_ssm
 
   # EC2 Key Pair - use existing key pair or let Packer create a temporary one
   ssh_keypair_name     = var.ssh_keypair_name != "" ? var.ssh_keypair_name : null
