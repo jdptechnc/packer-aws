@@ -79,6 +79,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
       AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
       AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+      AWS_REGION: ${{ inputs.aws_region }}
 
     steps:
       - name: Look up latest Amazon Linux 2023 AMI
@@ -118,7 +119,9 @@ jobs:
               {"Key": "Purpose", "Value": "packer-runner"}
             ]
           pre-runner-script: |
-            dnf install -y python3-pip unzip
+            dnf update -y
+            dnf install -y docker git libicu python3-pip unzip
+            systemctl enable docker
 
   # -----------------------------------------------------------------------
   # Job 2: Build the AMI on the self-hosted runner (same VPC, direct SSH)
@@ -313,6 +316,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
       AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
       AWS_DEFAULT_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+      AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
 
     steps:
       - name: Stop EC2 runner
