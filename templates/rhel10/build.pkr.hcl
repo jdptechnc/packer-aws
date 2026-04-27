@@ -45,8 +45,7 @@ build {
     ansible_env_vars = [
       "ANSIBLE_CONFIG=${abspath(path.root)}/ansible/ansible.cfg",
       "ANSIBLE_HOST_KEY_CHECKING=False",
-      "ANSIBLE_FORCE_COLOR=1",
-      "ANSIBLE_VAULT_PASSWORD_FILE=/tmp/.vault-pass"
+      "ANSIBLE_FORCE_COLOR=1"
     ]
     extra_arguments = [
       "--extra-vars", "display_skipped_hosts=false",
@@ -87,8 +86,7 @@ build {
     ansible_env_vars = [
       "ANSIBLE_CONFIG=${abspath(path.root)}/ansible/ansible.cfg",
       "ANSIBLE_HOST_KEY_CHECKING=False",
-      "ANSIBLE_FORCE_COLOR=1",
-      "ANSIBLE_VAULT_PASSWORD_FILE=/tmp/.vault-pass"
+      "ANSIBLE_FORCE_COLOR=1"
     ]
     extra_arguments = [
     #   "-v",  # Verbose output for debugging
