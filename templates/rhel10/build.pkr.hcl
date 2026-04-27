@@ -111,6 +111,8 @@ build {
       ami_name    = local.ami_name
       source_ami  = "{{ .SourceAMI }}"
       aws_region  = var.aws_region
+      version     = local.version
+      release     = tostring(local.is_release)
     }
   }
 }

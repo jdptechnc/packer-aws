@@ -9,18 +9,24 @@ locals {
   build_timestamp   = formatdate("YYYYMMDD-hhmmss", timestamp())
   build_description = "RHEL 10 Golden AMI | Built on: ${local.build_date} | ${local.build_by}"
 
-  # AMI naming - includes timestamp for uniqueness
-  ami_name = "${var.ami_name_prefix}-${local.build_timestamp}"
+  # Versioning — release builds use CalVer, test builds use timestamp
+  is_release = var.version != ""
+  version    = local.is_release ? var.version : "test-${local.build_timestamp}"
+
+  # AMI naming — release: rhel10-golden-2026.2.0, test: rhel10-golden-test-20260426-155256
+  ami_name = local.is_release ? "${var.ami_name_prefix}-${var.version}" : "${var.ami_name_prefix}-test-${local.build_timestamp}"
 
   # Build username - defaults to ec2-user for RHEL
   build_username = var.build_username != "" ? var.build_username : "ec2-user"
 
   # Merged tags with build metadata
   common_tags = merge(var.tags, {
-    BuildDate   = local.build_date
-    BuildBy     = local.build_by
-    SourceAMI   = "{{ .SourceAMI }}"
+    BuildDate     = local.build_date
+    BuildBy       = local.build_by
+    SourceAMI     = "{{ .SourceAMI }}"
     SourceAMIName = "{{ .SourceAMIName }}"
+    Version       = local.version
+    Release       = tostring(local.is_release)
   })
 
   # Run tags for build instance

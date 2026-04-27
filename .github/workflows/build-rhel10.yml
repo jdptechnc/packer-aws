@@ -57,6 +57,11 @@ on:
           - '0'
           - '1'
         default: '0'
+      version:
+        description: 'Release version (e.g., 2026.2.0). Leave blank for test builds.'
+        required: false
+        type: string
+        default: ''
 
 env:
   PACKER_VERSION: "1.15.2"
@@ -258,8 +263,12 @@ jobs:
           echo "Subnet ID: ${{ inputs.aws_subnet_id }}"
           echo "Interface: private_ip (direct SSH from runner)"
           echo "Verbose:   ${{ inputs.packer_log }}"
+          echo "Version:   ${{ inputs.version || 'test build' }}"
 
           packer_cmd="packer build -color=true -on-error=cleanup"
+
+          # Pass version to Packer (empty = test build)
+          packer_cmd="${packer_cmd} -var 'version=${{ inputs.version }}'"
 
           # Direct SSH via private IP — runner is in the same VPC
           packer_cmd="${packer_cmd} -var ssh_interface=private_ip"
@@ -285,7 +294,66 @@ jobs:
           echo "✓ Packer build complete"
 
       # ------------------------------------------------------------------
-      # 10. Upload build manifest as artifact
+      # 10. Extract AMI ID from manifest
+      # ------------------------------------------------------------------
+      - name: Extract AMI ID from manifest
+        id: ami
+        working-directory: ${{ env.TEMPLATE_DIR }}
+        run: |
+          MANIFEST=$(ls -t manifests/*.json 2>/dev/null | head -1)
+          if [ -z "$MANIFEST" ]; then
+            echo "::warning::No manifest file found — skipping AMI ID extraction"
+            echo "ami_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' "$MANIFEST" | cut -d: -f2)
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+          echo "Built AMI: ${AMI_ID}"
+
+      # ------------------------------------------------------------------
+      # 11. Publish to SSM Parameter Store (release builds only)
+      # ------------------------------------------------------------------
+      - name: Publish AMI to SSM Parameter Store
+        if: inputs.version != '' && steps.ami.outputs.ami_id != ''
+        run: |
+          VERSION="${{ inputs.version }}"
+          AMI_ID="${{ steps.ami.outputs.ami_id }}"
+          PREFIX="/ami/golden/rhel10"
+
+          # Write versioned parameter (permanent)
+          aws ssm put-parameter \
+            --name "${PREFIX}/${VERSION}" \
+            --type String \
+            --value "${AMI_ID}" \
+            --description "RHEL 10 Golden AMI ${VERSION}" \
+            --overwrite
+          echo "✓ SSM: ${PREFIX}/${VERSION} → ${AMI_ID}"
+
+          # Update latest pointer
+          aws ssm put-parameter \
+            --name "${PREFIX}/latest" \
+            --type String \
+            --value "${AMI_ID}" \
+            --description "Latest RHEL 10 Golden AMI (currently ${VERSION})" \
+            --overwrite
+          echo "✓ SSM: ${PREFIX}/latest → ${AMI_ID}"
+
+      # ------------------------------------------------------------------
+      # 12. Git tag release (release builds only)
+      # ------------------------------------------------------------------
+      - name: Tag release in git
+        if: inputs.version != '' && steps.ami.outputs.ami_id != ''
+        run: |
+          VERSION="${{ inputs.version }}"
+          AMI_ID="${{ steps.ami.outputs.ami_id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release ${VERSION} — AMI: ${AMI_ID}"
+          git push origin "v${VERSION}"
+          echo "✓ Git tag: v${VERSION}"
+
+      # ------------------------------------------------------------------
+      # 13. Upload build manifest as artifact
       # ------------------------------------------------------------------
       - name: Upload manifest
         if: always()
@@ -304,7 +372,7 @@ jobs:
           ls -lah ${{ env.TEMPLATE_DIR }}/manifests/ || echo "No manifest files found"
 
       # ------------------------------------------------------------------
-      # 11. Cleanup AWS credentials
+      # 14. Cleanup AWS credentials
       # ------------------------------------------------------------------
       - name: Cleanup credentials
         if: always()

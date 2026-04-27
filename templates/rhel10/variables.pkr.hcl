@@ -279,3 +279,17 @@ variable "metadata_options" {
     http_put_response_hop_limit = 2
   }
 }
+
+// Versioning
+
+variable "version" {
+  type        = string
+  description = "CalVer release version (e.g., 2026.2.0). Empty = test build."
+  default     = ""
+}
+
+variable "ssm_parameter_prefix" {
+  type        = string
+  description = "SSM Parameter Store prefix for storing AMI IDs."
+  default     = "/ami/golden"
+}
