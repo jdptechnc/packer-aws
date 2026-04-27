@@ -103,9 +103,9 @@ build {
   # keep_input_artifact = true ensures the AMI is never deregistered if this
   # post-processor fails (Packer would otherwise clean up the artifact on error)
   post-processor "manifest" {
-    output               = local.manifest_output
-    strip_path           = true
-    keep_input_artifact  = true
+    output              = local.manifest_output
+    strip_path          = true
+    keep_input_artifact = true
     custom_data = {
       build_date  = local.build_date
       ami_name    = local.ami_name

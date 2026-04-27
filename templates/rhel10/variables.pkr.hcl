@@ -121,7 +121,7 @@ variable "iam_instance_profile" {
 variable "github_run_id" {
   type        = string
   description = "GitHub Actions run ID, used as a run tag for identifying and cleaning up build instances. Set automatically via PKR_VAR_github_run_id in CI."
-  default     = "local"
+  default     = ""
 }
 
 variable "vpc_id" {
@@ -214,6 +214,12 @@ variable "ssh_private_key_file" {
   description = "Path to the private key file for the EC2 key pair. Required if ssh_keypair_name is set."
   sensitive   = true
   default     = ""
+}
+
+variable "pause_before_ssm" {
+  type        = string
+  description = "Pause before SSM connection."
+  default     = "10s"
 }
 
 // Tags

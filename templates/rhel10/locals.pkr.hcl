@@ -13,7 +13,7 @@ locals {
   is_release = var.version != ""
   version    = local.is_release ? var.version : "test-${local.build_timestamp}"
 
-  # AMI naming — release: rhel10-golden-2026.2.0, test: rhel10-golden-test-20260426-155256
+  # AMI naming — release: rhel10-golden-2026.2.0, test: rhel10-golden-test-YYYYMMDD-HHMMSS
   ami_name = local.is_release ? "${var.ami_name_prefix}-${var.version}" : "${var.ami_name_prefix}-test-${local.build_timestamp}"
 
   # Build username - defaults to ec2-user for RHEL
