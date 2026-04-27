@@ -259,7 +259,7 @@ jobs:
           echo "Interface: private_ip (direct SSH from runner)"
           echo "Verbose:   ${{ inputs.packer_log }}"
 
-          packer_cmd="packer build -color=true -on-error=abort"
+          packer_cmd="packer build -color=true -on-error=cleanup"
 
           # Direct SSH via private IP — runner is in the same VPC
           packer_cmd="${packer_cmd} -var ssh_interface=private_ip"
