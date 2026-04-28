@@ -19,14 +19,31 @@ locals {
   # Build username - defaults to ec2-user for RHEL
   build_username = var.build_username != "" ? var.build_username : "ec2-user"
 
-  # Merged tags with build metadata
+  # OS metadata — RHEL 10
+  # OSRelease reflects the configured minor stream (major.minor, e.g., "10.1").
+  # The full release including patch level is available in the SourceAmiName tag at runtime.
+  os_major   = split(".", var.rhel_version)[0]
+  os_minor   = split(".", var.rhel_version)[1]
+  os_release = var.rhel_version
+
+  # Merged tags applied to the AMI and snapshots
   common_tags = merge(var.tags, {
-    BuildDate     = local.build_date
-    BuildBy       = local.build_by
-    SourceAMI     = "{{ .SourceAMI }}"
-    SourceAMIName = "{{ .SourceAMIName }}"
-    Version       = local.version
-    Release       = tostring(local.is_release)
+    Name           = local.ami_name
+    BuildDate      = local.build_date
+    BuildTimestamp = local.build_timestamp
+    BuildBy        = local.build_by
+    SourceAmiId    = "{{ .SourceAMI }}"
+    SourceAmiName  = "{{ .SourceAMIName }}"
+    OSFamily       = "Linux"
+    OSDistro       = "RHEL"
+    OSMajor        = local.os_major
+    OSMinor        = local.os_minor
+    OSVersion      = var.rhel_version
+    OSRelease      = local.os_release
+    Architecture   = var.architecture
+    Channel        = var.channel
+    Version        = local.version
+    Release        = local.is_release ? "true" : "false"
   })
 
   # Run tags for build instance

@@ -104,6 +104,12 @@ variable "source_ami_id" {
   default     = ""
 }
 
+variable "architecture" {
+  type        = string
+  description = "CPU architecture for the build (x86_64 or arm64). Used in the source AMI filter and applied as the Architecture tag."
+  default     = "x86_64"
+}
+
 // Instance Configuration
 
 variable "instance_type" {
@@ -298,4 +304,10 @@ variable "ssm_parameter_prefix" {
   type        = string
   description = "SSM Parameter Store prefix for storing AMI IDs."
   default     = "/ami/golden"
+}
+
+variable "channel" {
+  type        = string
+  description = "Image channel / maturity tier applied as the Channel tag (e.g., golden, base, test)."
+  default     = "golden"
 }

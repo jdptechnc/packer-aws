@@ -3,10 +3,10 @@
 // Source AMI lookup - finds the latest official RHEL 10 AMI
 data "amazon-ami" "rhel10" {
   filters = {
-    name                = "RHEL-${var.rhel_version}*_HVM*-x86_64-*-Hourly2-GP3"
+    name                = "RHEL-${var.rhel_version}*_HVM*-${var.architecture}-*-Hourly2-GP3"
     root-device-type    = "ebs"
     virtualization-type = "hvm"
-    architecture        = "x86_64"
+    architecture        = var.architecture
   }
   # Red Hat publishes updated 10.0 AMIs even after 10.1+ is released.
   # The rhel_version variable targets a specific minor version (e.g., "10.1")
