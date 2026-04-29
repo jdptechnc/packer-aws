@@ -43,12 +43,12 @@ on:
         description: 'VPC ID for runner + build instances'
         required: false
         type: string
-        default: vpc-0c8dffe5eac8f64b8
+        default: vpc-0c53ca94f5f3ccf98
       aws_subnet_id:
         description: 'Subnet ID (must have outbound internet for runner)'
         required: false
         type: string
-        default: subnet-0ae141380d445b55d
+        default: subnet-021f82e53d9618d11
       packer_log:
         description: 'Enable verbose Packer logging (0=off, 1=on)'
         required: false
@@ -62,6 +62,9 @@ on:
         required: false
         type: string
         default: ''
+
+permissions:
+  contents: write
 
 env:
   PACKER_VERSION: "1.15.2"
@@ -154,6 +157,8 @@ jobs:
       # ------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       # ------------------------------------------------------------------
       # 2. Install Packer
