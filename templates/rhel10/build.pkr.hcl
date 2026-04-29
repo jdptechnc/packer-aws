@@ -110,7 +110,7 @@ build {
       source_ami  = "{{ .SourceAMI }}"
       aws_region  = var.aws_region
       version     = local.version
-      release     = tostring(local.is_release)
+      release     = local.is_release ? "true" : "false"
     }
   }
 }

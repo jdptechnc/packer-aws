@@ -5,7 +5,7 @@
 aws_region = "us-east-1"
 
 # AMI Configuration
-ami_name_prefix = "rhel10-golden-test"
+ami_name_prefix = "rhel10-golden"
 ami_description = "RHEL 10 Golden AMI - Hardened and configured by Packer"
 
 # Optional: Copy AMI to additional regions
@@ -59,7 +59,6 @@ communicator_timeout = "30m"
 # Tags
 tags = {
   Environment = "golden-image"
-  OS          = "RHEL10"
   ManagedBy   = "Packer"
   # Project     = "infrastructure"
   # CostCenter  = "it-infrastructure"
