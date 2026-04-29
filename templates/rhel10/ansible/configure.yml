@@ -81,6 +81,7 @@
           - selinux-policy
           - selinux-policy-targeted
           - sssd
+          - lvm2
         state: present
 
     # Install/Update AWS CLI v2 to latest version
