@@ -1,16 +1,15 @@
 # .github/workflows/_orchestrator.yml
 # =============================================================================
-# Orchestrator workflow
+# [INTERNAL] Orchestrator workflow
 #
-# Responsibilities:
-#   - Determine WHICH AMI templates to build
-#   - Expand a matrix of templates
-#   - Invoke the reusable AMI build workflow once per template
+# Determines WHICH AMI templates to build, expands a matrix, and invokes
+# the reusable build workflow once per template. Each matrix entry gets its
+# own EC2 self-hosted runner.
 #
-# This workflow contains *no* build logic.
+# This workflow contains NO build logic. Do not call directly.
 # =============================================================================
 
-name: "[Orchestrator] Build AMIs"
+name: "[INTERNAL] Orchestrator"
 
 on:
   workflow_call:
@@ -18,27 +17,28 @@ on:
       templates:
         description: >
           Templates to build:
-            - "all"            → all scheduled templates
-            - "linux"          → all Linux templates
-            - "rhel10"         → single template
-            - "rhel10,al2023"  → subset
+            "all"            → all templates with schedule: true
+            "linux"          → all Linux templates
+            "rhel10"         → single template by ID
+            "rhel10,al2023"  → comma-separated subset
         type: string
         default: "all"
-
       aws_region:
         type: string
         default: "us-east-1"
-
+      aws_vpc_id:
+        type: string
+        default: "vpc-0c8dffe5eac8f64b8"
+      aws_subnet_id:
+        type: string
+        default: "subnet-0ae141380d445b55d"
       packer_log:
         type: string
         default: "0"
-
       use_spot:
         type: boolean
         default: true
-
       oidc_role_arn:
-        description: "OIDC role ARN (empty = explicit creds)"
         type: string
         default: ""
 
@@ -55,13 +55,14 @@ on:
         required: true
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Resolve the template selector into a concrete matrix
+  # -------------------------------------------------------------------------
   resolve-matrix:
     name: Resolve template matrix
     runs-on: ubuntu-latest
-
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -76,32 +77,46 @@ jobs:
           echo "Template selector: ${FILTER}"
 
           if [ "${FILTER}" = "all" ]; then
+            # Scheduled: build everything marked schedule: true
             MATRIX=$(jq -c '{include: [.templates[] | select(.schedule == true)]}' "${REGISTRY}")
 
           elif [ "${FILTER}" = "linux" ] || [ "${FILTER}" = "windows" ]; then
+            # OS family filter
             MATRIX=$(jq -c --arg f "${FILTER}" \
               '{include: [.templates[] | select(.os_family == $f)]}' "${REGISTRY}")
 
           else
+            # Comma-separated list of template IDs (e.g., "rhel10,al2023")
             IFS=',' read -ra IDS <<< "${FILTER}"
             IDS_JSON=$(printf '"%s",' "${IDS[@]}")
             IDS_JSON="[${IDS_JSON%,}]"
-
             MATRIX=$(jq -c --argjson ids "${IDS_JSON}" \
               '{include: [.templates[] | select(.id as $id | $ids | index($id))]}' \
               "${REGISTRY}")
           fi
 
-          echo "Resolved matrix:"
-          echo "${MATRIX}" | jq .
+          # Validate we got at least one template
+          COUNT=$(echo "${MATRIX}" | jq '.include | length')
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "ERROR: No templates matched selector '${FILTER}'"
+            echo "Available templates:"
+            jq -r '.templates[].id' "${REGISTRY}"
+            exit 1
+          fi
 
+          echo "Resolved ${COUNT} template(s):"
+          echo "${MATRIX}" | jq .
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
 
+  # -------------------------------------------------------------------------
+  # Fan out: one reusable build workflow invocation per template
+  # Each gets its own EC2 runner, its own Packer build, its own cleanup.
+  # -------------------------------------------------------------------------
   build:
-    name: Build AMI(s)
+    name: "Build ${{ matrix.name }}"
     needs: resolve-matrix
-
     strategy:
+      # Don't cancel other builds if one fails
       fail-fast: false
       matrix: ${{ fromJson(needs.resolve-matrix.outputs.matrix) }}
 
@@ -113,10 +128,10 @@ jobs:
       os_family: ${{ matrix.os_family }}
       runner_instance_type: ${{ matrix.runner_instance_type }}
       build_timeout: ${{ matrix.build_timeout }}
-
       aws_region: ${{ inputs.aws_region }}
+      aws_vpc_id: ${{ inputs.aws_vpc_id }}
+      aws_subnet_id: ${{ inputs.aws_subnet_id }}
       packer_log: ${{ inputs.packer_log }}
       use_spot: ${{ inputs.use_spot }}
       oidc_role_arn: ${{ inputs.oidc_role_arn }}
-
     secrets: inherit

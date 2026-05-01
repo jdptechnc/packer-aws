@@ -1,19 +1,29 @@
 # .github/workflows/_build-ami-reusable.yml
 # =============================================================================
-# Reusable AMI build workflow
+# [INTERNAL] Reusable AMI build workflow
 #
-# Builds exactly ONE AMI template:
-#   - Launches ephemeral EC2 runner
-#   - Assembles Packer template directory (explicit copy)
-#   - Runs packer init / validate / build
-#   - Cleans up runner and any stale instances
+# Builds exactly ONE AMI template using an ephemeral EC2 self-hosted runner.
+#
+# Architecture (three jobs):
+#   1. start-runner  — launches an ephemeral AL2023 EC2 instance in the target
+#                      VPC and registers it as a GitHub Actions self-hosted
+#                      runner. This is REQUIRED because Packer must SSH to the
+#                      build instance over private IP — the runner must be in
+#                      the same VPC.
+#   2. build-ami     — runs ON that EC2 runner. Assembles shared Packer files,
+#                      installs tooling, runs packer init/validate/build.
+#   3. stop-runner   — deregisters the runner, terminates runner + any stale
+#                      build instances, deletes temporary security group.
+#
+# This workflow is invoked by the orchestrator. Do not call directly.
 # =============================================================================
 
-name: "[Reusable] Build AMI"
+name: "[INTERNAL] Reusable AMI Builder"
 
 on:
   workflow_call:
     inputs:
+      # -- Template metadata (from registry) ---------------------------------
       template_id:
         type: string
         required: true
@@ -26,7 +36,6 @@ on:
       os_family:
         type: string
         required: true
-
       runner_instance_type:
         type: string
         default: "t3.medium"
@@ -34,15 +43,26 @@ on:
         type: number
         default: 60
 
+      # -- AWS / network configuration ---------------------------------------
       aws_region:
         type: string
         default: "us-east-1"
+      aws_vpc_id:
+        type: string
+        default: "vpc-0c8dffe5eac8f64b8"
+      aws_subnet_id:
+        type: string
+        default: "subnet-0ae141380d445b55d"
+
+      # -- Build options -----------------------------------------------------
       packer_log:
         type: string
         default: "0"
       use_spot:
         type: boolean
         default: true
+
+      # -- OIDC (empty = explicit creds) -------------------------------------
       oidc_role_arn:
         type: string
         default: ""
@@ -63,62 +83,32 @@ env:
   PACKER_VERSION: "1.15.2"
 
 jobs:
-  build:
-    name: Build ${{ inputs.template_name }}
+  # =========================================================================
+  # Job 1: Launch an ephemeral EC2 self-hosted runner in the target VPC
+  #
+  # This job runs on a GitHub-hosted runner. Its ONLY purpose is to launch
+  # an EC2 instance in your VPC and register it as a self-hosted runner.
+  # All Packer/build work happens in Job 2, ON that EC2 instance.
+  # =========================================================================
+  start-runner:
+    name: "Start runner (${{ inputs.template_id }})"
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.build_timeout }}
+
+    # These outputs are consumed by Job 2 (targeting) and Job 3 (cleanup).
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+      runner-sg-id: ${{ steps.runner-sg.outputs.sg_id }}
 
     steps:
-      - uses: actions/checkout@v4
-
-    #   # -------------------------------------------------------------------
-    #   # Assemble Packer template directory (Option B – explicit)
-    #   # -------------------------------------------------------------------
-    #   - name: Assemble Packer template
-    #     run: |
-    #       set -euo pipefail
-
-    #       TEMPLATE="${{ inputs.template_dir }}"
-    #       OS_FAMILY="${{ inputs.os_family }}"
-
-    #       # echo "Assembling template in ${TEMPLATE}"
-
-    #       # cp templates/_shared/*.pkr.hcl "${TEMPLATE}/"
-
-    #       if [ "${OS_FAMILY}" = "linux" ]; then
-    #         cp templates/_shared-linux/*.pkr.hcl "${TEMPLATE}/"
-    #       elif [ "${OS_FAMILY}" = "windows" ]; then
-    #         # Windows support stub:
-    #         # - WinRM communicator
-    #         # - PowerShell provisioners
-    #         # - Sysprep before AMI creation
-    #         # cp templates/_shared-windows/*.pkr.hcl "${TEMPLATE}/"
-    #       else
-    #         echo "Unknown os_family: ${OS_FAMILY}"
-    #         exit 1
-    #       fi
-
-      # -------------------------------------------------------------------
-      # Install Packer
-      # -------------------------------------------------------------------
-      - name: Install Packer
-        run: |
-          curl -fsSL \
-            https://releases.hashicorp.com/packer/${{ env.PACKER_VERSION }}/packer_${{ env.PACKER_VERSION }}_linux_amd64.zip \
-            -o /tmp/packer.zip
-          sudo unzip -o /tmp/packer.zip -d /usr/local/bin
-          packer --version
-
-      # -------------------------------------------------------------------
-      # AWS authentication (OIDC preferred)
-      # -------------------------------------------------------------------
+      # -- AWS authentication ------------------------------------------------
       - name: Configure AWS credentials (OIDC)
         if: ${{ inputs.oidc_role_arn != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ inputs.oidc_role_arn }}
           aws-region: ${{ inputs.aws_region }}
-          role-session-name: gha-ami-${{ github.run_id }}
+          role-session-name: gha-start-${{ inputs.template_id }}-${{ github.run_id }}
 
       - name: Configure AWS credentials (explicit)
         if: ${{ inputs.oidc_role_arn == '' }}
@@ -131,26 +121,438 @@ jobs:
             echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}"
             echo "AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}"
             echo "AWS_DEFAULT_REGION=${{ inputs.aws_region }}"
+            echo "AWS_REGION=${{ inputs.aws_region }}"
           } >> "$GITHUB_ENV"
 
-      # -------------------------------------------------------------------
-      # Packer lifecycle
-      # -------------------------------------------------------------------
+      # -- Look up latest AL2023 AMI for the runner instance -----------------
+      # AWS maintains these SSM parameters with current official AMI IDs.
+      - name: Look up latest Amazon Linux 2023 AMI
+        id: ami
+        run: |
+          set -euo pipefail
+          AMI_ID=$(aws ssm get-parameters \
+            --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+            --query "Parameters[0].Value" --output text)
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+          echo "Runner AMI: ${AMI_ID}"
+
+      # -- Create a dedicated, ephemeral security group ----------------------
+      # Starts with no inbound rules (default-deny). The runner only needs
+      # outbound access (allowed by default in AWS SGs).
+      - name: Create runner security group
+        id: runner-sg
+        run: |
+          set -euo pipefail
+          SG_ID=$(aws ec2 create-security-group \
+            --group-name "gha-runner-${{ inputs.template_id }}-${{ github.run_id }}" \
+            --description "Ephemeral SG for GHA runner - ${{ inputs.template_id }} - run ${{ github.run_id }}" \
+            --vpc-id "${{ inputs.aws_vpc_id }}" \
+            --query 'GroupId' --output text)
+          echo "sg_id=${SG_ID}" >> "$GITHUB_OUTPUT"
+          echo "Runner SG: ${SG_ID}"
+
+      # -- Launch the EC2 runner and register it with GitHub -----------------
+      # The machulav/ec2-github-runner action:
+      #   1. Launches an EC2 instance
+      #   2. Waits for it to boot
+      #   3. Registers it as a self-hosted runner with a unique label
+      #
+      # pre-runner-script installs packages BEFORE the runner agent starts:
+      #   - git:        required for actions/checkout
+      #   - libicu:     required by the .NET-based GitHub runner agent
+      #   - python3.12: required for Ansible
+      #   - unzip:      required for Packer zip extraction
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@v2
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PAT }}
+          ec2-image-id: ${{ steps.ami.outputs.ami_id }}
+          ec2-instance-type: ${{ inputs.runner_instance_type }}
+          subnet-id: ${{ inputs.aws_subnet_id }}
+          security-group-id: ${{ steps.runner-sg.outputs.sg_id }}
+          market-type: ${{ inputs.use_spot && 'spot' || '' }}
+          aws-resource-tags: >
+            [
+              {"Key": "Name",        "Value": "gha-runner-${{ inputs.template_id }}-${{ github.run_id }}"},
+              {"Key": "GitHubRunId", "Value": "${{ github.run_id }}"},
+              {"Key": "CommitSHA",   "Value": "${{ github.sha }}"},
+              {"Key": "TemplateId",  "Value": "${{ inputs.template_id }}"},
+              {"Key": "Purpose",     "Value": "packer-runner"}
+            ]
+          pre-runner-script: |
+            dnf install -y git libicu python3.12 unzip
+
+  # =========================================================================
+  # Job 2: Build the AMI ON the self-hosted EC2 runner
+  #
+  # This job runs INSIDE YOUR VPC on the EC2 instance launched by Job 1.
+  # Packer connects to the build instance via private IP over SSH.
+  # This is why the runner must be in the same VPC as the build instance.
+  # =========================================================================
+  build-ami:
+    name: "Build ${{ inputs.template_name }}"
+    needs: start-runner
+    # Target the dynamically-created EC2 runner by its unique label.
+    runs-on: ${{ needs.start-runner.outputs.label }}
+    timeout-minutes: ${{ inputs.build_timeout }}
+
+    # Non-credential env vars only. AWS creds come from the auth step below.
+    env:
+      HOME: /root
+      PACKER_LOG: ${{ inputs.packer_log }}
+      # PKR_VAR_* env vars are automatically injected as Packer variables.
+      PKR_VAR_github_run_id: ${{ github.run_id }}
+      PKR_VAR_commit_sha: ${{ github.sha }}
+      PKR_VAR_repo_ref: ${{ github.ref_name }}
+      PKR_VAR_template_id: ${{ inputs.template_id }}
+      PKR_VAR_use_spot: ${{ inputs.use_spot }}
+      # Force colored, human-readable Ansible output in GHA logs.
+      ANSIBLE_FORCE_COLOR: "true"
+      ANSIBLE_STDOUT_CALLBACK: default
+      ANSIBLE_LOAD_CALLBACK_PLUGINS: "true"
+
+    steps:
+      # -- AWS authentication ------------------------------------------------
+      # OIDC works on self-hosted runners — the runner agent bundles Node.js,
+      # and the OIDC JWT is fetched from GitHub over HTTPS (which is why the
+      # runner subnet needs outbound internet).
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.oidc_role_arn != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.oidc_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: gha-build-${{ inputs.template_id }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Configure AWS credentials (explicit)
+        if: ${{ inputs.oidc_role_arn == '' }}
+        run: |
+          echo "::add-mask::${{ secrets.AWS_ACCESS_KEY_ID }}"
+          echo "::add-mask::${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "::add-mask::${{ secrets.AWS_SESSION_TOKEN }}"
+          echo "::add-mask::${{ secrets.ANSIBLE_VAULT_PASSWORD }}"
+          {
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}"
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            echo "AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}"
+            echo "AWS_DEFAULT_REGION=${{ inputs.aws_region }}"
+            echo "AWS_REGION=${{ inputs.aws_region }}"
+          } >> "$GITHUB_ENV"
+
+      # -- 1. Checkout repository --------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+    #   # -- 2. Assemble Packer template (Option B – explicit copy) ------------
+    #   # Copies shared .pkr.hcl files into the template directory so
+    #   # `packer build .` finds everything it needs. This is explicit and
+    #   # obvious to future maintainers — no symlinks, no magic.
+    #   - name: Assemble Packer template
+    #     run: |
+    #       set -euo pipefail
+    #       TEMPLATE="${{ inputs.template_dir }}"
+    #       OS_FAMILY="${{ inputs.os_family }}"
+
+    #       echo "Assembling shared Packer files into ${TEMPLATE}/"
+
+    #       # Shared across all templates (common variables, plugins, tag schema)
+    #       if [ -d templates/_shared ]; then
+    #         cp -v templates/_shared/*.pkr.hcl "${TEMPLATE}/"
+    #         echo "✓ Copied templates/_shared/"
+    #       fi
+
+    #       # OS-family-specific (Linux: SSH/spot config; Windows: WinRM/sysprep)
+    #       if [ -d "templates/_shared-${OS_FAMILY}" ]; then
+    #         cp -v "templates/_shared-${OS_FAMILY}/"*.pkr.hcl "${TEMPLATE}/"
+    #         echo "✓ Copied templates/_shared-${OS_FAMILY}/"
+    #       else
+    #         echo "WARN: No shared directory for os_family=${OS_FAMILY}"
+    #       fi
+
+    #       echo "=== Assembled template contents ==="
+    #       ls -la "${TEMPLATE}/"*.pkr.hcl
+
+      # -- 3. Install Packer ------------------------------------------------
+      - name: Install Packer
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://releases.hashicorp.com/packer/${{ env.PACKER_VERSION }}/packer_${{ env.PACKER_VERSION }}_linux_amd64.zip" \
+            -o /tmp/packer.zip
+          sudo unzip -o /tmp/packer.zip -d /usr/local/bin/
+          rm /tmp/packer.zip
+          packer --version
+          echo "✓ Packer ${{ env.PACKER_VERSION }} installed"
+
+      # -- 4. Configure AWS credentials file (explicit mode only) ------------
+      # With OIDC, env vars are sufficient. With explicit credentials, some
+      # Ansible modules prefer the credentials file on disk.
+      - name: Configure AWS credentials file
+        if: ${{ inputs.oidc_role_arn == '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.aws
+          cat > ~/.aws/config <<EOF
+          [default]
+          region = ${{ inputs.aws_region }}
+          output = json
+          EOF
+          cat > ~/.aws/credentials <<EOF
+          [default]
+          aws_access_key_id = ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key = ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_session_token = ${{ secrets.AWS_SESSION_TOKEN }}
+          EOF
+          chmod 600 ~/.aws/credentials ~/.aws/config
+          echo "✓ AWS credentials file configured"
+
+      # -- 5. Verify AWS identity --------------------------------------------
+      # Smoke test: confirm credentials work before spending time on setup.
+      - name: Verify AWS credentials
+        run: |
+          set -euo pipefail
+          echo "Auth mode: ${{ inputs.oidc_role_arn != '' && 'OIDC' || 'explicit' }}"
+          aws sts get-caller-identity
+
+      # -- 6. Setup Ansible venv ---------------------------------------------
+      # Each run: block starts a fresh shell, so the venv must be activated
+      # in every step that needs Ansible or pip-installed packages.
+      - name: Create Ansible venv and install dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          ansible --version
+          echo "✓ Ansible venv ready"
+
+      - name: Install Ansible collections
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          ansible-galaxy collection install -v ansible.posix community.general
+          echo "✓ Ansible collections installed"
+
+      # -- 7. Write Ansible Vault password file ------------------------------
+      # printf (not echo) avoids a trailing newline that would corrupt the
+      # password.
+      - name: Write Ansible Vault password file
+        run: |
+          printf '%s' "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/.vault-pass
+          chmod 600 /tmp/.vault-pass
+
+      # -- 8. Packer init (download plugins) ---------------------------------
       - name: Packer init
         working-directory: ${{ inputs.template_dir }}
-        run: packer init .
+        run: |
+          set -euo pipefail
+          source ${{ github.workspace }}/.venv/bin/activate
+          packer init .
+          echo "✓ Packer init complete"
 
+      # -- 9. Packer validate ------------------------------------------------
       - name: Packer validate
         working-directory: ${{ inputs.template_dir }}
-        run: packer validate .
+        run: |
+          set -euo pipefail
+          source ${{ github.workspace }}/.venv/bin/activate
+          packer validate .
+          echo "✓ Packer template valid"
 
+      # -- 10. Packer build --------------------------------------------------
+      # Key flags:
+      #   -on-error=cleanup  If build fails, Packer terminates build instance
+      #   ssh_interface=private_ip  SSH over private IP (runner is in same VPC)
+      #   associate_public_ip=false  No public IP on build instance
+      #
+      # Command is built as a bash array (not string + eval) to handle
+      # quoting correctly and avoid injection risks.
       - name: Packer build
         working-directory: ${{ inputs.template_dir }}
-        env:
-          PACKER_LOG: ${{ inputs.packer_log }}
-          PKR_VAR_template_id: ${{ inputs.template_id }}
-          PKR_VAR_github_run_id: ${{ github.run_id }}
-          PKR_VAR_commit_sha: ${{ github.sha }}
-          PKR_VAR_use_spot: ${{ inputs.use_spot }}
         run: |
-          packer build -color=true -on-error=cleanup .
+          set -euo pipefail
+          mkdir -p manifests
+          source ${{ github.workspace }}/.venv/bin/activate
+
+          echo "=== Starting Packer build: ${{ inputs.template_name }} ==="
+          echo "Template:  ${{ inputs.template_id }}"
+          echo "Region:    ${{ inputs.aws_region }}"
+          echo "VPC ID:    ${{ inputs.aws_vpc_id }}"
+          echo "Subnet ID: ${{ inputs.aws_subnet_id }}"
+          echo "Interface: private_ip (direct SSH from EC2 runner)"
+          echo "Spot:      ${{ inputs.use_spot }}"
+          echo "Auth:      ${{ inputs.oidc_role_arn != '' && 'OIDC' || 'explicit' }}"
+          echo "Verbose:   ${{ inputs.packer_log }}"
+
+          packer_cmd=(packer build -color=true -on-error=cleanup)
+          packer_cmd+=(-var "ssh_interface=private_ip")
+          packer_cmd+=(-var "associate_public_ip=false")
+
+          if [ -n "${{ inputs.aws_vpc_id }}" ]; then
+            packer_cmd+=(-var "vpc_id=${{ inputs.aws_vpc_id }}")
+          fi
+          if [ -n "${{ inputs.aws_subnet_id }}" ]; then
+            packer_cmd+=(-var "subnet_id=${{ inputs.aws_subnet_id }}")
+          fi
+
+          if [ "${{ inputs.packer_log }}" = "1" ]; then
+            echo "Running with verbose output..."
+            packer_cmd+=(-debug)
+          fi
+
+          packer_cmd+=(.)
+
+          echo "Executing: ${packer_cmd[*]}"
+          "${packer_cmd[@]}"
+          echo "✓ Packer build complete"
+
+      # -- 11. Upload build manifest as artifact -----------------------------
+      - name: Upload manifest
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: packer-manifest-${{ inputs.template_id }}
+          path: ${{ inputs.template_dir }}/manifests/*.json
+          retention-days: 90
+
+      - name: Show build result
+        if: always()
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lah ${{ inputs.template_dir }}/manifests/ 2>/dev/null || echo "No manifest files found"
+
+      # -- 12. Job summary ---------------------------------------------------
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## 🏗️ ${{ inputs.template_name }} Golden AMI Build"
+            echo ""
+            echo "| Parameter | Value |"
+            echo "|---|---|"
+            echo "| Template | \`${{ inputs.template_id }}\` |"
+            echo "| Region | \`${{ inputs.aws_region }}\` |"
+            echo "| VPC | \`${{ inputs.aws_vpc_id }}\` |"
+            echo "| Subnet | \`${{ inputs.aws_subnet_id }}\` |"
+            echo "| Spot | \`${{ inputs.use_spot }}\` |"
+            echo "| Auth Mode | \`${{ inputs.oidc_role_arn != '' && 'OIDC' || 'explicit' }}\` |"
+            echo "| Packer Version | \`${{ env.PACKER_VERSION }}\` |"
+            echo "| Commit SHA | \`${{ github.sha }}\` |"
+            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| Run ID | \`${{ github.run_id }}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo ""
+
+            MANIFEST="${{ inputs.template_dir }}/manifests/packer-manifest.json"
+            if [ -f "${MANIFEST}" ]; then
+              AMI_ID=$(jq -r '.builds[-1].artifact_id // "N/A"' "${MANIFEST}")
+              BUILD_TIME=$(jq -r '.builds[-1].build_time // "N/A"' "${MANIFEST}")
+              echo "### ✅ Build Output"
+              echo "| Output | Value |"
+              echo "|---|---|"
+              echo "| **AMI ID** | \`${AMI_ID}\` |"
+              echo "| Build Time | ${BUILD_TIME}s |"
+            else
+              echo "### ⚠️ No manifest found (build may have failed)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -- 13. Cleanup credentials -------------------------------------------
+      - name: Cleanup credentials
+        if: always()
+        run: |
+          rm -rf ~/.aws
+          rm -f /tmp/.vault-pass
+          echo "✓ Credentials cleaned up"
+
+  # =========================================================================
+  # Job 3: Stop the runner and clean up ALL resources
+  #
+  # CRITICAL: if: always() ensures this runs even if build-ami failed or
+  # was cancelled. Without it, the runner stays running (and billing).
+  # =========================================================================
+  stop-runner:
+    name: "Stop runner (${{ inputs.template_id }})"
+    needs: [start-runner, build-ami]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # -- AWS authentication ------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.oidc_role_arn != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.oidc_role_arn }}
+          aws-region: ${{ inputs.aws_region || 'us-east-1' }}
+          role-session-name: gha-stop-${{ inputs.template_id }}-${{ github.run_id }}
+
+      - name: Configure AWS credentials (explicit)
+        if: ${{ inputs.oidc_role_arn == '' }}
+        run: |
+          echo "::add-mask::${{ secrets.AWS_ACCESS_KEY_ID }}"
+          echo "::add-mask::${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "::add-mask::${{ secrets.AWS_SESSION_TOKEN }}"
+          {
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}"
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            echo "AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}"
+            echo "AWS_DEFAULT_REGION=${{ inputs.aws_region || 'us-east-1' }}"
+            echo "AWS_REGION=${{ inputs.aws_region || 'us-east-1' }}"
+          } >> "$GITHUB_ENV"
+
+      # -- Deregister runner and terminate instance --------------------------
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@v2
+        if: ${{ needs.start-runner.outputs.ec2-instance-id }}
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PAT }}
+          label: ${{ needs.start-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-runner.outputs.ec2-instance-id }}
+
+      # -- Delete ephemeral security group -----------------------------------
+      # Can't delete an SG while an instance uses it, so wait for termination.
+      - name: Delete runner security group
+        if: always()
+        run: |
+          set -uo pipefail
+          SG_ID="${{ needs.start-runner.outputs.runner-sg-id }}"
+          if [ -n "${SG_ID}" ]; then
+            echo "Waiting for runner instance to fully terminate..."
+            aws ec2 wait instance-terminated \
+              --instance-ids "${{ needs.start-runner.outputs.ec2-instance-id }}" \
+              2>/dev/null || sleep 30
+            aws ec2 delete-security-group --group-id "${SG_ID}" 2>/dev/null \
+              && echo "✓ Deleted runner SG: ${SG_ID}" \
+              || echo "WARN: Could not delete SG ${SG_ID} (may already be gone)"
+          fi
+
+      # -- Terminate stale build instances -----------------------------------
+      # Safety net: if Packer didn't clean up (crash, cancellation, etc.),
+      # find and terminate any instances tagged with this run ID.
+      - name: Terminate stale build instances
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "=== Checking for stale build instances (run ID: ${{ github.run_id }}, template: ${{ inputs.template_id }}) ==="
+
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:GitHubRunId,Values=${{ github.run_id }}" \
+              "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[].Instances[].InstanceId" \
+            --output text)
+
+          if [ -z "${INSTANCE_IDS}" ] || [ "${INSTANCE_IDS}" = "None" ]; then
+            echo "No stale build instances found — Packer cleaned up normally."
+          else
+            echo "Found instances to terminate: ${INSTANCE_IDS}"
+            aws ec2 terminate-instances --instance-ids ${INSTANCE_IDS}
+            echo "✓ Termination requested for: ${INSTANCE_IDS}"
+          fi

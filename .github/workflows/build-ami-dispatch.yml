@@ -2,91 +2,54 @@
 # =============================================================================
 # API trigger for AMI builds — OIDC authentication
 #
-# Accepts repository_dispatch events from any automation platform that can
-# make HTTP POST requests: Ansible Tower/AAP, Jenkins, Rundeck, ServiceNow,
-# Terraform, Lambda, cron + curl, etc.
+# Trigger examples:
 #
-# No AWS credentials in the payload or in repository secrets — OIDC handles
-# authentication automatically.
+#   Build all:
+#     curl -X POST \
+#       -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+#       -H "Accept: application/vnd.github+json" \
+#       -H "X-GitHub-Api-Version: 2022-11-28" \
+#       "https://api.github.com/repos/OWNER/REPO/dispatches" \
+#       -d '{"event_type":"build-ami","client_payload":{"templates":"all"}}'
 #
-# ─── Trigger examples ───────────────────────────────────────────────────────
+#   Build one:
+#     ... "client_payload": {"templates": "rhel10", "packer_log": "1"} ...
 #
-# Build all scheduled templates:
-#   curl -X POST \
-#     -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-#     -H "Accept: application/vnd.github+json" \
-#     -H "X-GitHub-Api-Version: 2022-11-28" \
-#     "https://api.github.com/repos/OWNER/REPO/dispatches" \
-#     -d '{
-#       "event_type": "build-ami",
-#       "client_payload": {
-#         "templates": "all"
-#       }
-#     }'
+#   Build subset:
+#     ... "client_payload": {"templates": "rhel10,al2023"} ...
 #
-# Build a single template:
-#   curl -X POST \
-#     -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-#     -H "Accept: application/vnd.github+json" \
-#     -H "X-GitHub-Api-Version: 2022-11-28" \
-#     "https://api.github.com/repos/OWNER/REPO/dispatches" \
-#     -d '{
-#       "event_type": "build-ami",
-#       "client_payload": {
-#         "templates": "rhel10",
-#         "aws_region": "us-east-2",
-#         "packer_log": "1"
-#       }
-#     }'
+#   All Linux:
+#     ... "client_payload": {"templates": "linux"} ...
 #
-# Build a subset:
-#   ... "templates": "rhel10,al2023" ...
+#   From Ansible:
+#     - name: Trigger AMI build
+#       ansible.builtin.uri:
+#         url: "https://api.github.com/repos/{{ org }}/{{ repo }}/dispatches"
+#         method: POST
+#         headers:
+#           Authorization: "Bearer {{ github_token }}"
+#           Accept: "application/vnd.github+json"
+#           X-GitHub-Api-Version: "2022-11-28"
+#         body_format: json
+#         body:
+#           event_type: "build-ami"
+#           client_payload:
+#             templates: "{{ templates | default('all') }}"
+#         status_code: 204
 #
-# Build all Linux templates:
-#   ... "templates": "linux" ...
-#
-# From Ansible:
-#   - name: Trigger AMI build
-#     ansible.builtin.uri:
-#       url: "https://api.github.com/repos/{{ org }}/{{ repo }}/dispatches"
-#       method: POST
-#       headers:
-#         Authorization: "Bearer {{ github_token }}"
-#         Accept: "application/vnd.github+json"
-#         X-GitHub-Api-Version: "2022-11-28"
-#       body_format: json
-#       body:
-#         event_type: "build-ami"
-#         client_payload:
-#           templates: "{{ templates | default('all') }}"
-#           aws_region: "{{ aws_region | default('us-east-1') }}"
-#       status_code: 204
-#
-# From gh CLI:
-#   gh api repos/OWNER/REPO/dispatches \
-#     -f event_type=build-ami \
-#     -f 'client_payload[templates]=rhel10,al2023'
-#
-# ─── client_payload fields (all optional) ───────────────────────────────────
-#
+# client_payload fields (all optional):
 #   templates   — "all", "linux", "windows", or comma-separated IDs
-#                 (default: "all")
-#   aws_region  — target AWS region (default: "us-east-1")
+#   aws_region  — target region (default: us-east-1)
 #   packer_log  — "0" or "1" (default: "0")
 #   use_spot    — true or false (default: true)
-#
 # =============================================================================
 
 name: "Build AMIs (API Dispatch)"
 
 on:
   repository_dispatch:
-    # Only payloads with this exact event_type trigger this workflow.
-    # Add more types for other automation entry points if needed:
-    #   types: [build-ami, rebuild-all-amis, patch-emergency]
     types: [build-ami]
 
-# Required for OIDC.
 permissions:
   id-token: write
   contents: read
@@ -97,12 +60,11 @@ jobs:
     with:
       templates: ${{ github.event.client_payload.templates || 'all' }}
       aws_region: ${{ github.event.client_payload.aws_region || 'us-east-1' }}
+      aws_vpc_id: ${{ github.event.client_payload.aws_vpc_id || 'vpc-0c8dffe5eac8f64b8' }}
+      aws_subnet_id: ${{ github.event.client_payload.aws_subnet_id || 'subnet-0ae141380d445b55d' }}
       packer_log: ${{ github.event.client_payload.packer_log || '0' }}
       use_spot: ${{ github.event.client_payload.use_spot != false }}
-      # OIDC: role ARN from repository variable (not a secret — ARNs
-      # aren't sensitive). Set in Settings → Variables → Actions.
       oidc_role_arn: ${{ vars.AWS_OIDC_ROLE_ARN }}
     secrets:
-      # No AWS credential secrets — OIDC handles authentication.
       GH_PAT: ${{ secrets.GH_PAT }}
       ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}

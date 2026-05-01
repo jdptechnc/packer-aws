@@ -2,25 +2,16 @@
 # =============================================================================
 # Manual trigger for AMI builds
 #
-# Provides a form in the GitHub UI (Actions → Run workflow) for interactive
-# builds during development and testing.
-#
+# Provides a form in the GitHub UI (Actions → Run workflow).
 # Calls the orchestrator, which expands the template selector into a matrix
 # and invokes the reusable build workflow once per template.
 #
-# SECURITY NOTE — workflow_dispatch inputs:
-#   Inputs of type: string are stored in PLAIN TEXT in the workflow run's API
-#   metadata. Anyone with read access to the repository can see them. The
-#   ::add-mask:: directive in the reusable workflow only masks log output,
-#   not API metadata.
-#
-#   This is acceptable for a POC with short-lived STS credentials. For
-#   production, migrate to OIDC and remove the credential inputs entirely.
-#
-#   After migrating, DELETE old workflow runs that contain credential inputs:
+# SECURITY NOTE:
+#   workflow_dispatch string inputs are stored in PLAIN TEXT in the workflow
+#   run's API metadata. Use short-lived STS credentials for the POC.
+#   Migrate to OIDC for production, then delete old runs containing creds:
 #     gh run list --workflow=build-ami-manual.yml --limit 100 --json databaseId \
-#       | jq -r '.[].databaseId' \
-#       | xargs -I {} gh run delete {}
+#       | jq -r '.[].databaseId' | xargs -I {} gh run delete {}
 # =============================================================================
 
 name: "Build AMI (Manual)"
@@ -28,18 +19,13 @@ name: "Build AMI (Manual)"
 on:
   workflow_dispatch:
     inputs:
-      # -- Template selection ------------------------------------------------
       templates:
         description: >
-          Templates to build:
-            "all" = all scheduled templates,
-            "linux" = all Linux,
-            or comma-separated IDs like "rhel10" or "rhel10,al2023"
+          Templates to build: "all", "linux", or comma-separated IDs
+          (e.g., "rhel10" or "rhel10,al2023")
         required: true
         type: string
         default: 'all'
-
-      # -- AWS credentials (POC only — migrate to OIDC for production) -------
       aws_access_key_id:
         description: 'AWS Access Key ID'
         required: true
@@ -52,13 +38,21 @@ on:
         description: 'AWS Session Token (for temporary STS credentials)'
         required: true
         type: string
-
-      # -- Build options -----------------------------------------------------
       aws_region:
         description: 'AWS Region for the build'
         required: false
         type: string
         default: 'us-east-1'
+      aws_vpc_id:
+        description: 'VPC ID for runner + build instances'
+        required: false
+        type: string
+        default: 'vpc-0c8dffe5eac8f64b8'
+      aws_subnet_id:
+        description: 'Subnet ID (must have outbound internet for runner)'
+        required: false
+        type: string
+        default: 'subnet-0ae141380d445b55d'
       packer_log:
         description: 'Enable verbose Packer logging (0=off, 1=on)'
         required: false
@@ -79,10 +73,10 @@ jobs:
     with:
       templates: ${{ inputs.templates }}
       aws_region: ${{ inputs.aws_region }}
+      aws_vpc_id: ${{ inputs.aws_vpc_id }}
+      aws_subnet_id: ${{ inputs.aws_subnet_id }}
       packer_log: ${{ inputs.packer_log }}
       use_spot: ${{ inputs.use_spot }}
-      # No oidc_role_arn — triggers explicit credential mode in the
-      # reusable workflow.
     secrets:
       AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
       AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
