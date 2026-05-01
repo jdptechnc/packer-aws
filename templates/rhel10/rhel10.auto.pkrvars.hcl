@@ -35,8 +35,8 @@ instance_type = "t3.medium"
 
 # Network Configuration
 # VPC and subnet are passed via workflow -var flags; do not set here.
-# vpc_id    = "vpc-09ae81fb3b2d41490"
-# subnet_id = "subnet-0b652758062a68193"
+vpc_id    = "vpc-0c53ca94f5f3ccf98"
+subnet_id = "subnet-021f82e53d9618d11"
 
 # Set to false if building in a private subnet with NAT
 # associate_public_ip = true
