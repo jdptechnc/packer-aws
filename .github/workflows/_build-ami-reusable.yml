@@ -81,9 +81,9 @@ jobs:
           TEMPLATE="${{ inputs.template_dir }}"
           OS_FAMILY="${{ inputs.os_family }}"
 
-          echo "Assembling template in ${TEMPLATE}"
+          # echo "Assembling template in ${TEMPLATE}"
 
-          cp templates/_shared/*.pkr.hcl "${TEMPLATE}/"
+          # cp templates/_shared/*.pkr.hcl "${TEMPLATE}/"
 
           if [ "${OS_FAMILY}" = "linux" ]; then
             cp templates/_shared-linux/*.pkr.hcl "${TEMPLATE}/"
@@ -92,7 +92,7 @@ jobs:
             # - WinRM communicator
             # - PowerShell provisioners
             # - Sysprep before AMI creation
-            cp templates/_shared-windows/*.pkr.hcl "${TEMPLATE}/"
+            # cp templates/_shared-windows/*.pkr.hcl "${TEMPLATE}/"
           else
             echo "Unknown os_family: ${OS_FAMILY}"
             exit 1
