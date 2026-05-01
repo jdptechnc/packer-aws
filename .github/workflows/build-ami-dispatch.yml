@@ -4,7 +4,7 @@
 #
 # Trigger examples:
 #
-#   Build all:
+#   Build all (test version):
 #     curl -X POST \
 #       -H "Authorization: Bearer ${GITHUB_TOKEN}" \
 #       -H "Accept: application/vnd.github+json" \
@@ -12,8 +12,8 @@
 #       "https://api.github.com/repos/OWNER/REPO/dispatches" \
 #       -d '{"event_type":"build-ami","client_payload":{"templates":"all"}}'
 #
-#   Build one:
-#     ... "client_payload": {"templates": "rhel10", "packer_log": "1"} ...
+#   Build one with explicit version:
+#     ... "client_payload": {"templates": "rhel10", "version": "2026.05"} ...
 #
 #   Build subset:
 #     ... "client_payload": {"templates": "rhel10,al2023"} ...
@@ -35,10 +35,12 @@
 #           event_type: "build-ami"
 #           client_payload:
 #             templates: "{{ templates | default('all') }}"
+#             version: "{{ ami_version | default('') }}"
 #         status_code: 204
 #
 # client_payload fields (all optional):
 #   templates   — "all", "linux", "windows", or comma-separated IDs
+#   version     — AMI release version tag (empty = test-<timestamp>)
 #   aws_region  — target region (default: us-east-1)
 #   packer_log  — "0" or "1" (default: "0")
 #   use_spot    — true or false (default: true)
@@ -59,6 +61,7 @@ jobs:
     uses: ./.github/workflows/_orchestrator.yml
     with:
       templates: ${{ github.event.client_payload.templates || 'all' }}
+      version: ${{ github.event.client_payload.version || '' }}
       aws_region: ${{ github.event.client_payload.aws_region || 'us-east-1' }}
       aws_vpc_id: ${{ github.event.client_payload.aws_vpc_id || 'vpc-0c8dffe5eac8f64b8' }}
       aws_subnet_id: ${{ github.event.client_payload.aws_subnet_id || 'subnet-0ae141380d445b55d' }}

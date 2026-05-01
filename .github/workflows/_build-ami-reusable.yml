@@ -43,6 +43,12 @@ on:
         type: number
         default: 60
 
+      # -- Version -----------------------------------------------------------
+      version:
+        description: 'AMI release version tag (empty = test-<timestamp>)'
+        type: string
+        default: ''
+
       # -- AWS / network configuration ---------------------------------------
       aws_region:
         type: string
@@ -246,36 +252,55 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-    #   # -- 2. Assemble Packer template (Option B – explicit copy) ------------
-    #   # Copies shared .pkr.hcl files into the template directory so
-    #   # `packer build .` finds everything it needs. This is explicit and
-    #   # obvious to future maintainers — no symlinks, no magic.
-    #   - name: Assemble Packer template
-    #     run: |
-    #       set -euo pipefail
-    #       TEMPLATE="${{ inputs.template_dir }}"
-    #       OS_FAMILY="${{ inputs.os_family }}"
+      # -- 2. Resolve AMI version tag ----------------------------------------
+      # If the caller provided a version, use it as-is (e.g., "1.0.0").
+      # If empty, generate a default: test-<UTC timestamp>.
+      # The resolved value is passed to Packer as PKR_VAR_ami_version
+      # in the build step's env block.
+      - name: Resolve AMI version
+        id: version
+        run: |
+          set -euo pipefail
+          INPUT_VERSION="${{ inputs.version }}"
+          if [ -n "${INPUT_VERSION}" ]; then
+            AMI_VERSION="${INPUT_VERSION}"
+            echo "Using provided version: ${AMI_VERSION}"
+          else
+            AMI_VERSION="test-$(date -u +%Y%m%dT%H%MZ)"
+            echo "No version provided — using default: ${AMI_VERSION}"
+          fi
+          echo "ami_version=${AMI_VERSION}" >> "$GITHUB_OUTPUT"
 
-    #       echo "Assembling shared Packer files into ${TEMPLATE}/"
+      # -- 3. Assemble Packer template (Option B – explicit copy) ------------
+      # Copies shared .pkr.hcl files into the template directory so
+      # `packer build .` finds everything it needs. This is explicit and
+      # obvious to future maintainers — no symlinks, no magic.
+      - name: Assemble Packer template
+        run: |
+          set -euo pipefail
+          TEMPLATE="${{ inputs.template_dir }}"
+          OS_FAMILY="${{ inputs.os_family }}"
 
-    #       # Shared across all templates (common variables, plugins, tag schema)
-    #       if [ -d templates/_shared ]; then
-    #         cp -v templates/_shared/*.pkr.hcl "${TEMPLATE}/"
-    #         echo "✓ Copied templates/_shared/"
-    #       fi
+          echo "Assembling shared Packer files into ${TEMPLATE}/"
 
-    #       # OS-family-specific (Linux: SSH/spot config; Windows: WinRM/sysprep)
-    #       if [ -d "templates/_shared-${OS_FAMILY}" ]; then
-    #         cp -v "templates/_shared-${OS_FAMILY}/"*.pkr.hcl "${TEMPLATE}/"
-    #         echo "✓ Copied templates/_shared-${OS_FAMILY}/"
-    #       else
-    #         echo "WARN: No shared directory for os_family=${OS_FAMILY}"
-    #       fi
+          # Shared across all templates (common variables, plugins, tag schema)
+          if [ -d templates/_shared ]; then
+            cp -v templates/_shared/*.pkr.hcl "${TEMPLATE}/"
+            echo "✓ Copied templates/_shared/"
+          fi
 
-    #       echo "=== Assembled template contents ==="
-    #       ls -la "${TEMPLATE}/"*.pkr.hcl
+          # OS-family-specific (Linux: SSH/spot config; Windows: WinRM/sysprep)
+          if [ -d "templates/_shared-${OS_FAMILY}" ]; then
+            cp -v "templates/_shared-${OS_FAMILY}/"*.pkr.hcl "${TEMPLATE}/"
+            echo "✓ Copied templates/_shared-${OS_FAMILY}/"
+          else
+            echo "WARN: No shared directory for os_family=${OS_FAMILY}"
+          fi
 
-      # -- 3. Install Packer ------------------------------------------------
+          echo "=== Assembled template contents ==="
+          ls -la "${TEMPLATE}/"*.pkr.hcl
+
+      # -- 4. Install Packer ------------------------------------------------
       - name: Install Packer
         run: |
           set -euo pipefail
@@ -286,7 +311,7 @@ jobs:
           packer --version
           echo "✓ Packer ${{ env.PACKER_VERSION }} installed"
 
-      # -- 4. Configure AWS credentials file (explicit mode only) ------------
+      # -- 5. Configure AWS credentials file (explicit mode only) ------------
       # With OIDC, env vars are sufficient. With explicit credentials, some
       # Ansible modules prefer the credentials file on disk.
       - name: Configure AWS credentials file
@@ -308,7 +333,7 @@ jobs:
           chmod 600 ~/.aws/credentials ~/.aws/config
           echo "✓ AWS credentials file configured"
 
-      # -- 5. Verify AWS identity --------------------------------------------
+      # -- 6. Verify AWS identity --------------------------------------------
       # Smoke test: confirm credentials work before spending time on setup.
       - name: Verify AWS credentials
         run: |
@@ -316,7 +341,7 @@ jobs:
           echo "Auth mode: ${{ inputs.oidc_role_arn != '' && 'OIDC' || 'explicit' }}"
           aws sts get-caller-identity
 
-      # -- 6. Setup Ansible venv ---------------------------------------------
+      # -- 7. Setup Ansible venv ---------------------------------------------
       # Each run: block starts a fresh shell, so the venv must be activated
       # in every step that needs Ansible or pip-installed packages.
       - name: Create Ansible venv and install dependencies
@@ -336,7 +361,7 @@ jobs:
           ansible-galaxy collection install -v ansible.posix community.general
           echo "✓ Ansible collections installed"
 
-      # -- 7. Write Ansible Vault password file ------------------------------
+      # -- 8. Write Ansible Vault password file ------------------------------
       # printf (not echo) avoids a trailing newline that would corrupt the
       # password.
       - name: Write Ansible Vault password file
@@ -344,7 +369,7 @@ jobs:
           printf '%s' "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > /tmp/.vault-pass
           chmod 600 /tmp/.vault-pass
 
-      # -- 8. Packer init (download plugins) ---------------------------------
+      # -- 9. Packer init (download plugins) ---------------------------------
       - name: Packer init
         working-directory: ${{ inputs.template_dir }}
         run: |
@@ -353,7 +378,7 @@ jobs:
           packer init .
           echo "✓ Packer init complete"
 
-      # -- 9. Packer validate ------------------------------------------------
+      # -- 10. Packer validate -----------------------------------------------
       - name: Packer validate
         working-directory: ${{ inputs.template_dir }}
         run: |
@@ -362,16 +387,18 @@ jobs:
           packer validate .
           echo "✓ Packer template valid"
 
-      # -- 10. Packer build --------------------------------------------------
+      # -- 11. Packer build --------------------------------------------------
       # Key flags:
       #   -on-error=cleanup  If build fails, Packer terminates build instance
       #   ssh_interface=private_ip  SSH over private IP (runner is in same VPC)
       #   associate_public_ip=false  No public IP on build instance
       #
-      # Command is built as a bash array (not string + eval) to handle
-      # quoting correctly and avoid injection risks.
+      # PKR_VAR_ami_version is set here (not at job level) because it depends
+      # on the resolved version from the earlier step.
       - name: Packer build
         working-directory: ${{ inputs.template_dir }}
+        env:
+          PKR_VAR_ami_version: ${{ steps.version.outputs.ami_version }}
         run: |
           set -euo pipefail
           mkdir -p manifests
@@ -379,6 +406,7 @@ jobs:
 
           echo "=== Starting Packer build: ${{ inputs.template_name }} ==="
           echo "Template:  ${{ inputs.template_id }}"
+          echo "Version:   ${{ steps.version.outputs.ami_version }}"
           echo "Region:    ${{ inputs.aws_region }}"
           echo "VPC ID:    ${{ inputs.aws_vpc_id }}"
           echo "Subnet ID: ${{ inputs.aws_subnet_id }}"
@@ -409,7 +437,7 @@ jobs:
           "${packer_cmd[@]}"
           echo "✓ Packer build complete"
 
-      # -- 11. Upload build manifest as artifact -----------------------------
+      # -- 12. Upload build manifest as artifact -----------------------------
       - name: Upload manifest
         if: always()
         continue-on-error: true
@@ -425,7 +453,7 @@ jobs:
           echo "=== Build artifacts ==="
           ls -lah ${{ inputs.template_dir }}/manifests/ 2>/dev/null || echo "No manifest files found"
 
-      # -- 12. Job summary ---------------------------------------------------
+      # -- 13. Job summary ---------------------------------------------------
       - name: Write job summary
         if: always()
         run: |
@@ -435,6 +463,7 @@ jobs:
             echo "| Parameter | Value |"
             echo "|---|---|"
             echo "| Template | \`${{ inputs.template_id }}\` |"
+            echo "| Version | \`${{ steps.version.outputs.ami_version }}\` |"
             echo "| Region | \`${{ inputs.aws_region }}\` |"
             echo "| VPC | \`${{ inputs.aws_vpc_id }}\` |"
             echo "| Subnet | \`${{ inputs.aws_subnet_id }}\` |"
@@ -461,7 +490,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # -- 13. Cleanup credentials -------------------------------------------
+      # -- 14. Cleanup credentials -------------------------------------------
       - name: Cleanup credentials
         if: always()
         run: |

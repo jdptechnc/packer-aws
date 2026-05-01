@@ -26,6 +26,14 @@ on:
         required: true
         type: string
         default: 'all'
+      version:
+        description: >
+          AMI release version tag. If empty, defaults to "test-<timestamp>"
+          (e.g., "test-20260501T1430Z"). Set explicitly for production builds
+          (e.g., "1.0.0", "2026.05").
+        required: false
+        type: string
+        default: ''
       aws_access_key_id:
         description: 'AWS Access Key ID'
         required: true
@@ -72,6 +80,7 @@ jobs:
     uses: ./.github/workflows/_orchestrator.yml
     with:
       templates: ${{ inputs.templates }}
+      version: ${{ inputs.version }}
       aws_region: ${{ inputs.aws_region }}
       aws_vpc_id: ${{ inputs.aws_vpc_id }}
       aws_subnet_id: ${{ inputs.aws_subnet_id }}

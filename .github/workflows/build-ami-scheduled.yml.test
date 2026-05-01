@@ -7,6 +7,10 @@
 # #
 # # Uses OIDC for AWS authentication — no stored credentials.
 # #
+# # Version is left empty — scheduled builds always get "test-<timestamp>".
+# # To use a date-based version instead (e.g., "2026.05"), set it explicitly
+# # or derive it from the cron date in the orchestrator.
+# #
 # # NOTE: GitHub disables scheduled workflows on repos with no commit activity
 # # for 60 days. Push periodically or use repository_dispatch from an external
 # # scheduler instead.
@@ -27,6 +31,7 @@
 #     uses: ./.github/workflows/_orchestrator.yml
 #     with:
 #       templates: 'all'
+#       version: ''
 #       aws_region: 'us-east-1'
 #       packer_log: '0'
 #       use_spot: true

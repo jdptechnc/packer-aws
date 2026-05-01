@@ -23,6 +23,10 @@ on:
             "rhel10,al2023"  → comma-separated subset
         type: string
         default: "all"
+      version:
+        description: 'AMI release version tag (empty = test-<timestamp>)'
+        type: string
+        default: ''
       aws_region:
         type: string
         default: "us-east-1"
@@ -128,6 +132,7 @@ jobs:
       os_family: ${{ matrix.os_family }}
       runner_instance_type: ${{ matrix.runner_instance_type }}
       build_timeout: ${{ matrix.build_timeout }}
+      version: ${{ inputs.version }}
       aws_region: ${{ inputs.aws_region }}
       aws_vpc_id: ${{ inputs.aws_vpc_id }}
       aws_subnet_id: ${{ inputs.aws_subnet_id }}
