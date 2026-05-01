@@ -1,0 +1,91 @@
+# .github/workflows/build-ami-manual.yml
+# =============================================================================
+# Manual trigger for AMI builds
+#
+# Provides a form in the GitHub UI (Actions → Run workflow) for interactive
+# builds during development and testing.
+#
+# Calls the orchestrator, which expands the template selector into a matrix
+# and invokes the reusable build workflow once per template.
+#
+# SECURITY NOTE — workflow_dispatch inputs:
+#   Inputs of type: string are stored in PLAIN TEXT in the workflow run's API
+#   metadata. Anyone with read access to the repository can see them. The
+#   ::add-mask:: directive in the reusable workflow only masks log output,
+#   not API metadata.
+#
+#   This is acceptable for a POC with short-lived STS credentials. For
+#   production, migrate to OIDC and remove the credential inputs entirely.
+#
+#   After migrating, DELETE old workflow runs that contain credential inputs:
+#     gh run list --workflow=build-ami-manual.yml --limit 100 --json databaseId \
+#       | jq -r '.[].databaseId' \
+#       | xargs -I {} gh run delete {}
+# =============================================================================
+
+name: "Build AMI (Manual)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      # -- Template selection ------------------------------------------------
+      templates:
+        description: >
+          Templates to build:
+            "all" = all scheduled templates,
+            "linux" = all Linux,
+            or comma-separated IDs like "rhel10" or "rhel10,al2023"
+        required: true
+        type: string
+        default: 'all'
+
+      # -- AWS credentials (POC only — migrate to OIDC for production) -------
+      aws_access_key_id:
+        description: 'AWS Access Key ID'
+        required: true
+        type: string
+      aws_secret_access_key:
+        description: 'AWS Secret Access Key'
+        required: true
+        type: string
+      aws_session_token:
+        description: 'AWS Session Token (for temporary STS credentials)'
+        required: true
+        type: string
+
+      # -- Build options -----------------------------------------------------
+      aws_region:
+        description: 'AWS Region for the build'
+        required: false
+        type: string
+        default: 'us-east-1'
+      packer_log:
+        description: 'Enable verbose Packer logging (0=off, 1=on)'
+        required: false
+        type: choice
+        options:
+          - '0'
+          - '1'
+        default: '0'
+      use_spot:
+        description: 'Use spot instances for runner and Packer build'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/_orchestrator.yml
+    with:
+      templates: ${{ inputs.templates }}
+      aws_region: ${{ inputs.aws_region }}
+      packer_log: ${{ inputs.packer_log }}
+      use_spot: ${{ inputs.use_spot }}
+      # No oidc_role_arn — triggers explicit credential mode in the
+      # reusable workflow.
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ inputs.aws_access_key_id }}
+      AWS_SECRET_ACCESS_KEY: ${{ inputs.aws_secret_access_key }}
+      AWS_SESSION_TOKEN: ${{ inputs.aws_session_token }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}

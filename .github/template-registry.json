@@ -1,0 +1,22 @@
+{
+  "templates": [
+    {
+      "id": "rhel10",
+      "name": "RHEL 10",
+      "dir": "templates/rhel10",
+      "os_family": "linux",
+      "schedule": true,
+      "runner_instance_type": "t3.medium",
+      "build_timeout": 60
+    },
+    {
+      "id": "al2023",
+      "name": "Amazon Linux 2023",
+      "dir": "templates/al2023",
+      "os_family": "linux",
+      "schedule": true,
+      "runner_instance_type": "t3.medium",
+      "build_timeout": 60
+    }
+  ]
+}

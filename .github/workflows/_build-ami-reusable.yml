@@ -1,0 +1,156 @@
+# .github/workflows/_build-ami-reusable.yml
+# =============================================================================
+# Reusable AMI build workflow
+#
+# Builds exactly ONE AMI template:
+#   - Launches ephemeral EC2 runner
+#   - Assembles Packer template directory (explicit copy)
+#   - Runs packer init / validate / build
+#   - Cleans up runner and any stale instances
+# =============================================================================
+
+name: "[Reusable] Build AMI"
+
+on:
+  workflow_call:
+    inputs:
+      template_id:
+        type: string
+        required: true
+      template_name:
+        type: string
+        required: true
+      template_dir:
+        type: string
+        required: true
+      os_family:
+        type: string
+        required: true
+
+      runner_instance_type:
+        type: string
+        default: "t3.medium"
+      build_timeout:
+        type: number
+        default: 60
+
+      aws_region:
+        type: string
+        default: "us-east-1"
+      packer_log:
+        type: string
+        default: "0"
+      use_spot:
+        type: boolean
+        default: true
+      oidc_role_arn:
+        type: string
+        default: ""
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_SESSION_TOKEN:
+        required: false
+      GH_PAT:
+        required: true
+      ANSIBLE_VAULT_PASSWORD:
+        required: true
+
+env:
+  PACKER_VERSION: "1.15.2"
+
+jobs:
+  build:
+    name: Build ${{ inputs.template_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.build_timeout }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Assemble Packer template directory (Option B – explicit)
+      # -------------------------------------------------------------------
+      - name: Assemble Packer template
+        run: |
+          set -euo pipefail
+
+          TEMPLATE="${{ inputs.template_dir }}"
+          OS_FAMILY="${{ inputs.os_family }}"
+
+          echo "Assembling template in ${TEMPLATE}"
+
+          cp templates/_shared/*.pkr.hcl "${TEMPLATE}/"
+
+          if [ "${OS_FAMILY}" = "linux" ]; then
+            cp templates/_shared-linux/*.pkr.hcl "${TEMPLATE}/"
+          elif [ "${OS_FAMILY}" = "windows" ]; then
+            # Windows support stub:
+            # - WinRM communicator
+            # - PowerShell provisioners
+            # - Sysprep before AMI creation
+            cp templates/_shared-windows/*.pkr.hcl "${TEMPLATE}/"
+          else
+            echo "Unknown os_family: ${OS_FAMILY}"
+            exit 1
+          fi
+
+      # -------------------------------------------------------------------
+      # Install Packer
+      # -------------------------------------------------------------------
+      - name: Install Packer
+        run: |
+          curl -fsSL \
+            https://releases.hashicorp.com/packer/${{ env.PACKER_VERSION }}/packer_${{ env.PACKER_VERSION }}_linux_amd64.zip \
+            -o /tmp/packer.zip
+          sudo unzip -o /tmp/packer.zip -d /usr/local/bin
+          packer --version
+
+      # -------------------------------------------------------------------
+      # AWS authentication (OIDC preferred)
+      # -------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.oidc_role_arn != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.oidc_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: gha-ami-${{ github.run_id }}
+
+      - name: Configure AWS credentials (explicit)
+        if: ${{ inputs.oidc_role_arn == '' }}
+        run: |
+          echo "::add-mask::${{ secrets.AWS_ACCESS_KEY_ID }}"
+          echo "::add-mask::${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "::add-mask::${{ secrets.AWS_SESSION_TOKEN }}"
+          {
+            echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}"
+            echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            echo "AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}"
+            echo "AWS_DEFAULT_REGION=${{ inputs.aws_region }}"
+          } >> "$GITHUB_ENV"
+
+      # -------------------------------------------------------------------
+      # Packer lifecycle
+      # -------------------------------------------------------------------
+      - name: Packer init
+        working-directory: ${{ inputs.template_dir }}
+        run: packer init .
+
+      - name: Packer validate
+        working-directory: ${{ inputs.template_dir }}
+        run: packer validate .
+
+      - name: Packer build
+        working-directory: ${{ inputs.template_dir }}
+        env:
+          PACKER_LOG: ${{ inputs.packer_log }}
+          PKR_VAR_template_id: ${{ inputs.template_id }}
+          PKR_VAR_github_run_id: ${{ github.run_id }}
+          PKR_VAR_commit_sha: ${{ github.sha }}
+          PKR_VAR_use_spot: ${{ inputs.use_spot }}
+        run: |
+          packer build -color=true -on-error=cleanup .

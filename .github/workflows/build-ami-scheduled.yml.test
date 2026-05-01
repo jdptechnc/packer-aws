@@ -1,0 +1,59 @@
+# .github/workflows/build-ami-scheduled.yml
+
+# # =============================================================================
+# # Scheduled trigger for AMI builds
+# #
+# # Rebuilds ALL templates marked schedule: true in template-registry.json
+# # on the 1st of every month at 6 AM UTC. Useful for incorporating monthly
+# # OS security patches into golden AMIs.
+# #
+# # Authentication:
+# #   Uses OIDC (preferred). The role ARN is stored as a GitHub repository
+# #   variable (Settings → Secrets and variables → Actions → Variables):
+# #     Name:  AWS_OIDC_ROLE_ARN
+# #     Value: arn:aws:iam::123456789012:role/github-actions-packer-role
+# #
+# #   If OIDC is not yet configured, you can temporarily use repository secrets
+# #   for AWS credentials. Change oidc_role_arn to '' and uncomment the AWS
+# #   secret lines below.
+# #
+# # NOTE: GitHub automatically disables scheduled workflows on repositories
+# # with no commit activity for 60 days. If this repo is low-activity, either:
+# #   - Push a keep-alive commit periodically (even an empty commit works)
+# #   - Use repository_dispatch from an external scheduler instead
+# # =============================================================================
+
+# name: "Build AMIs (Monthly)"
+
+# on:
+#   schedule:
+#     # 6 AM UTC on the 1st of every month
+#     # Cron syntax: minute hour day-of-month month day-of-week
+#     - cron: '0 6 1 * *'
+
+# # Required for OIDC: id-token: write allows the workflow to request a JWT
+# # from GitHub's OIDC provider. contents: read is needed for actions/checkout.
+# permissions:
+#   id-token: write
+#   contents: read
+
+# jobs:
+#   build:
+#     uses: ./.github/workflows/_orchestrator.yml
+#     with:
+#       # "all" builds every template with schedule: true in the registry.
+#       # To exclude a template from scheduled builds, set its schedule
+#       # field to false in template-registry.json.
+#       templates: 'all'
+#       aws_region: 'us-east-1'
+#       packer_log: '0'
+#       use_spot: true
+#       oidc_role_arn: ${{ vars.AWS_OIDC_ROLE_ARN }}
+#     secrets:
+#       # OIDC mode — no AWS credential secrets needed.
+#       # Uncomment these if temporarily falling back to explicit credentials:
+#       # AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#       # AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#       # AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+#       GH_PAT: ${{ secrets.GH_PAT }}
+#       ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
