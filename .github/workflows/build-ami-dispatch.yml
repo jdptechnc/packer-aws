@@ -63,8 +63,8 @@ jobs:
       templates: ${{ github.event.client_payload.templates || 'all' }}
       version: ${{ github.event.client_payload.version || '' }}
       aws_region: ${{ github.event.client_payload.aws_region || 'us-east-1' }}
-      aws_vpc_id: ${{ github.event.client_payload.aws_vpc_id || 'vpc-0c8dffe5eac8f64b8' }}
-      aws_subnet_id: ${{ github.event.client_payload.aws_subnet_id || 'subnet-0ae141380d445b55d' }}
+      aws_vpc_id: ${{ github.event.client_payload.aws_vpc_id || 'vpc-0c53ca94f5f3ccf98' }}
+      aws_subnet_id: ${{ github.event.client_payload.aws_subnet_id || 'subnet-021f82e53d9618d11' }}
       packer_log: ${{ github.event.client_payload.packer_log || '0' }}
       use_spot: ${{ github.event.client_payload.use_spot != false }}
       oidc_role_arn: ${{ vars.AWS_OIDC_ROLE_ARN }}

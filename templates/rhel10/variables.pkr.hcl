@@ -130,6 +130,24 @@ variable "github_run_id" {
   default     = ""
 }
 
+variable "commit_sha" {
+  type        = string
+  description = "Git commit SHA that triggered the build. Set automatically via PKR_VAR_commit_sha in CI."
+  default     = ""
+}
+
+variable "repo_ref" {
+  type        = string
+  description = "Git ref (branch or tag) that triggered the build. Set automatically via PKR_VAR_repo_ref in CI."
+  default     = ""
+}
+
+variable "use_spot" {
+  type        = string
+  description = "Whether the build uses spot instances. Set automatically via PKR_VAR_use_spot in CI."
+  default     = ""
+}
+
 variable "vpc_id" {
   type        = string
   description = "VPC ID where the build instance will be launched. Leave empty to use default VPC."

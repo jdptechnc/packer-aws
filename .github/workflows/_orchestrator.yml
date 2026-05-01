@@ -32,10 +32,10 @@ on:
         default: "us-east-1"
       aws_vpc_id:
         type: string
-        default: "vpc-0c8dffe5eac8f64b8"
+        default: "vpc-0c53ca94f5f3ccf98"
       aws_subnet_id:
         type: string
-        default: "subnet-0ae141380d445b55d"
+        default: "subnet-021f82e53d9618d11"
       packer_log:
         type: string
         default: "0"
